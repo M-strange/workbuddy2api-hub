@@ -1,7 +1,10 @@
 # WorkBuddy2API-Hub — 国际版、国内版多账号网关中枢
 
+> [!NOTE]
+> **社区接管分支（2026-11-07）**：上游 ardeyouxipianyi/workbuddy2api-hub 已于 2026-11-06 停止维护，本仓库接手继续维护，已并入社区 PR #813-#819（并发名额归还、账号筛选、看板布局、请求日志等）。
+
 > [!CAUTION]
-> **项目停止维护（2026-11-06）**：后续不再更新代码、不跟进上游变化、不再处理新的 issue / PR。感谢大家的 star。
+> **上游原作者声明（2026-11-06）**：后续不再更新代码、不跟进上游变化、不再处理新的 issue / PR。感谢大家的 star。
 
 > [!IMPORTANT]
 > **项目进入低频维护（2026-10-23） / Low-frequency maintenance**
@@ -25,12 +28,12 @@
 This project is for protocol research and personal use only. Prefer the official client, do not use your primary account, and do not resell or share access.
 
 <p align="center">
-  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v2.0.0-2496ED?style=flat-square" alt="Version 2.0.0"></a>
+  <a href="https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v2.0.1-2496ED?style=flat-square" alt="Version 2.0.1"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/Maintenance-Ended-9f2d2d?style=flat-square" alt="Maintenance ended">
+  <img src="https://img.shields.io/badge/Maintenance-Ended-9f2d2d?style=flat-square" alt="Community maintained">
 </p>
 
 ## 核心特性
@@ -222,7 +225,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 273 个套件：206 个 Python + 67 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 276 个套件：208 个 Python + 68 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_mobile_check.py` 是独立的 Playwright 手机/桌面布局检查器（需自行安装 Playwright），按需手动运行，不在上面的套件集里。
 - CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12（3.9 是本项目声称的最低版本），Windows 上 python 3.12；推送 `v*` tag 时额外断言 **tag == 源码版本**（`-ci` 演练 tag 豁免）。
 
