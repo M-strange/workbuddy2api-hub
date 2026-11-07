@@ -1214,6 +1214,14 @@ def login_rate_limit_key(peer_ip, headers):
     if via_chain:
         return via_chain
     return peer_ip
+def client_ip_of(peer_ip, headers):
+    """请求的来源 IP，日志与用量行统一走这里。
+
+    语义与限流键完全一致：只有在 peer 可信（本机 / 反代）时才相信
+    X-Real-IP、X-Forwarded-For，否则直接取对端地址，避免客户端伪造头把日志
+    写成别人的 IP。永远返回非空串——日志里空字段比错字段更难排查。
+    """
+    return login_rate_limit_key(peer_ip or "", headers) or "-"
 _models_cache = {"intl": {"at": 0.0, "data": None}, "cn": {"at": 0.0, "data": None}}
 #: 目录来源追踪（面板展示用）：每个 realm 最近一次构建/刷新清单的出处。
 #: source 取值见 catalog_meta()；fetched_at 是网关拿到这批数据的时刻；
@@ -1539,7 +1547,7 @@ def _best_cached_tokens(usage):
 def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_ms=None, fp=None,
                 account=None, outcome="completed", key=None, effort=None,
                 requested_model=None, realm=None, proxy_slot=None, proxy_exit=None,
-                kind="chat", media=None):
+                kind="chat", media=None, client_ip=None):
     """Record one finished request as exactly one JSONL row.
 
     A request without a usage block still gets a row (flagged usage_missing):
@@ -1601,6 +1609,10 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
     # existed; the dashboard reports those as two different buckets, and a
     # missing field is the only evidence of the cutover that survives.
     row["key"] = key or ""
+    # 来源 IP：只在调用方能拿到时写。旧行没有这个字段，读的一侧按空处理，
+    # 所以面板/统计不需要迁移历史数据。
+    if client_ip:
+        row["client_ip"] = client_ip
     # The price policy this request is measured against, stored as a reference
     # so the table can be de-duplicated and swept. A row written before the
     # table existed has no reference and falls back to the timeline.
@@ -1639,13 +1651,14 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
         key_tag = f" key={key_label(key)}" if key else ""
         speed_tag = f" {row.get('tokens_per_sec', 0)}t/s" if row.get("tokens_per_sec") else ""
         miss_tag = " usage=missing" if usage_missing else ""
+        ip_tag = f" ip={client_ip}" if client_ip else ""
         if kind == "chat":
-            log(f"chat done: model={model}{acc_tag}{egress_tag}{key_tag}{dur} tokens={t_tokens} (in={fields.get('prompt_tokens',0)} out={fields.get('completion_tokens',0)}){speed_tag}{miss_tag}", tag="chat")
+            log(f"chat done: model={model}{ip_tag}{acc_tag}{egress_tag}{key_tag}{dur} tokens={t_tokens} (in={fields.get('prompt_tokens',0)} out={fields.get('completion_tokens',0)}){speed_tag}{miss_tag}", tag="chat")
         else:
             # 媒体请求没有 token 概念，日志行只说"谁的哪个模型、花了多少、用多久"，
             # 并用 kind 当 tag，这样「运行日志」页能单独筛出媒体。
             credit_tag = (" %.2f 积分" % fields["credit"]) if fields.get("credit") else ""
-            log(f"{kind} done: model={model}{acc_tag}{egress_tag}{key_tag}{dur}{credit_tag}", tag=kind)
+            log(f"{kind} done: model={model}{ip_tag}{acc_tag}{egress_tag}{key_tag}{dur}{credit_tag}", tag=kind)
     except Exception:
         pass
     return row
@@ -1660,6 +1673,16 @@ def record_upstream_usage(upstream, requested_model, usage, **kwargs):
         kwargs.setdefault("proxy_slot", account.proxy_slot)
         kwargs.setdefault("proxy_exit", egress_exit(account.proxy))
     record_usage(billed_model, usage, requested_model=requested_model, **kwargs)
+
+
+def record_upstream_usage_for(handler, upstream, model, usage, **kwargs):
+    """记录上游实际计费模型的用量，并带上这次请求的来源 IP。
+
+    写成自由函数而不是 Handler 方法：有多处调用点在测试桩（SimpleNamespace、
+    FakeHandler）里被直接驱动，那些桩没有这个方法。
+    """
+    kwargs.setdefault("client_ip", getattr(handler, "client_ip", None))
+    return record_upstream_usage(upstream, model, usage, **kwargs)
 
 
 def _persist_usage(row, fail_label):
@@ -11415,7 +11438,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "2.0.1",
+        "version": "2.0.2",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -20191,6 +20214,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self.parse_request():
             return
+        # 一条 keep-alive 连接服务多轮请求，所以每次都要重算，不能只在 __init__ 里算。
+        self.client_ip = client_ip_of(
+            self.client_address[0] if self.client_address else "",
+            self.headers)
         mname = 'do_' + self.command
         if not hasattr(self, mname):
             self.send_error(501, "Unsupported method (%r)" % self.command)
@@ -20207,7 +20234,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/2.0.1"
+    server_version = "wb-proxy/2.0.2"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -20223,7 +20250,8 @@ class Handler(BaseHTTPRequestHandler):
                     return
         except Exception:
             pass
-        log(fmt % args)
+        # 每条 access 日志都带来源 IP：排查"谁在刷接口"时不必再去反查时间戳。
+        log("%s %s" % (getattr(self, "client_ip", "") or "-", fmt % args))
     def _json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -22008,7 +22036,8 @@ class Handler(BaseHTTPRequestHandler):
             stream=False,
             elapsed_ms=(time.time() - started_at) * 1000.0,
             account=account.uid, outcome="completed", key=self._key_id(),
-            realm=realm, kind=kind)
+            realm=realm, kind=kind,
+            client_ip=getattr(self, "client_ip", None))
 
     def _handle_media_post(self, path, payload):
         """媒体 POST 的入口：开关 → 参数 → 限流 → 并发槽 → 选号 → 发请求 → 记账。"""
@@ -25039,7 +25068,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(
                 502, "compaction produced no summary (the model returned no text); retry")
         wall = int((time.time() - t_start) * 1000)
-        record_upstream_usage(upstream, model, chat_obj.get("usage"), stream=False,
+        record_upstream_usage_for(self, upstream, model, chat_obj.get("usage"), stream=False,
                               elapsed_ms=wall, fp=fp, account=account.uid,
                               key=self._key_id())
         item = {
@@ -25154,7 +25183,7 @@ class Handler(BaseHTTPRequestHandler):
                     holder["usage"] = total_usage
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             wall = int((time.time() - t_start) * 1000)
-            record_upstream_usage(upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
+            record_upstream_usage_for(self, upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
                          ttft_ms=first_ms,
                          gen_ms=(wall - first_ms) if first_ms is not None else None,
                          fp=fp, account=account.uid, realm=realm,
@@ -25184,7 +25213,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         wall = int((time.time() - t_start) * 1000)
-        record_upstream_usage(upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
+        record_upstream_usage_for(self, upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
                      ttft_ms=first_ms,
                      gen_ms=(wall - first_ms) if first_ms is not None else None,
                      fp=fp, account=account.uid, realm=realm,
@@ -25243,7 +25272,7 @@ class Handler(BaseHTTPRequestHandler):
                          key=self._key_id())
             return self._error(
                 502, "upstream returned reasoning without output text; retry")
-        record_upstream_usage(upstream, model, chat_obj.get("usage"), stream=False, elapsed_ms=wall, fp=fp,
+        record_upstream_usage_for(self, upstream, model, chat_obj.get("usage"), stream=False, elapsed_ms=wall, fp=fp,
                      account=account.uid, realm=realm, key=self._key_id(),
                      effort=effort)
         return self._json(200, result)
@@ -25378,7 +25407,7 @@ class Handler(BaseHTTPRequestHandler):
             chat_obj = aggregate_stream(upstream, model, None)
             result = chat_to_messages(chat_obj)
             wall = int((time.time() - t_start) * 1000)
-            record_upstream_usage(upstream, model, chat_obj.get("usage"), stream=False, elapsed_ms=wall,
+            record_upstream_usage_for(self, upstream, model, chat_obj.get("usage"), stream=False, elapsed_ms=wall,
                          fp=fp, account=account.uid, realm=realm,
                          key=self._key_id(), effort=effort)
             return self._json(200, result)
@@ -25416,7 +25445,7 @@ class Handler(BaseHTTPRequestHandler):
                     heartbeat.write(frame)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             wall = int((time.time() - t_start) * 1000)
-            record_upstream_usage(upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
+            record_upstream_usage_for(self, upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
                          ttft_ms=first_ms,
                          gen_ms=(wall - first_ms) if first_ms is not None else None,
                          fp=fp, account=account.uid, realm=realm,
@@ -25441,7 +25470,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         wall = int((time.time() - t_start) * 1000)
-        record_upstream_usage(upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
+        record_upstream_usage_for(self, upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
                      ttft_ms=first_ms,
                      gen_ms=(wall - first_ms) if first_ms is not None else None,
                      fp=fp, account=account.uid, realm=realm,
@@ -25729,8 +25758,9 @@ class Handler(BaseHTTPRequestHandler):
         given = client_effort_of(payload) or payload.get("reasoning") \
             or payload.get("thinking") or payload.get("enable_thinking")
         log(
-            "chat: model=%s client_effort=%r -> upstream_effort=%r stream=%s msgs=%d key=%s"
+            "chat: ip=%s model=%s client_effort=%r -> upstream_effort=%r stream=%s msgs=%d key=%s"
             % (
+                getattr(self, "client_ip", None),
                 payload.get("model"),
                 given,
                 upstream_effort_of(forwarded, payload.get("model")),
@@ -26074,7 +26104,7 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 # Client hung up; still account for what upstream produced.
                 wall = int((time.time() - t_start) * 1000)
-                record_upstream_usage(upstream, model, last_usage, stream=True,
+                record_upstream_usage_for(self, upstream, model, last_usage, stream=True,
                              elapsed_ms=wall, ttft_ms=first_ms,
                              gen_ms=(wall - first_ms) if first_ms is not None else None,
                              fp=fp, account=account.uid, realm=realm,
@@ -26154,7 +26184,7 @@ class Handler(BaseHTTPRequestHandler):
                              gen_ms=(wall - first_ms) if first_ms is not None else None,
                              fp=fp, outcome="failed", realm=realm, key=self._key_id())
             else:
-                record_upstream_usage(upstream, model, last_usage, stream=True,
+                record_upstream_usage_for(self, upstream, model, last_usage, stream=True,
                              elapsed_ms=wall, ttft_ms=first_ms,
                              gen_ms=(wall - first_ms) if first_ms is not None else None,
                              fp=fp, account=account.uid, realm=realm,
@@ -26188,7 +26218,7 @@ class Handler(BaseHTTPRequestHandler):
         first_at = result.get("first_chunk_at")
         # Measured from request arrival so streaming and non-streaming are comparable.
         first_ms = int((first_at - t_start) * 1000) if first_at else None
-        record_upstream_usage(upstream, model, result.get("usage"), stream=False,
+        record_upstream_usage_for(self, upstream, model, result.get("usage"), stream=False,
                      elapsed_ms=wall, ttft_ms=first_ms,
                      gen_ms=(wall - first_ms) if first_ms is not None else None,
                      fp=fp, account=account.uid, realm=realm,
