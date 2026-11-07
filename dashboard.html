@@ -2765,6 +2765,7 @@ if(!window.__NEXT_UI__ && defaultConsoleLayout) {
     '日限额': 'Daily limit',
     '旧代理：': 'Old proxy:',
     '时间': 'Time',
+    '来源 IP': 'Source IP',
     '明细': 'Details',
     '显示条数:': 'Rows:',
     '普通/体验用户': 'Free/trial user',
@@ -5502,7 +5503,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
     </div>
     <div id="recent" class="table-wrap"></div>
     <div class="console-filterbar" aria-label="最近请求筛选">
-      <input id="recentModelFilter" class="console-search" type="search" placeholder="搜索模型、账号或 API Key" aria-label="搜索最近请求" oninput="RECENT_FILTERS.query=this.value;renderRecentView()">
+      <input id="recentModelFilter" class="console-search" type="search" placeholder="搜索模型、账号、API Key 或 IP" aria-label="搜索最近请求" oninput="RECENT_FILTERS.query=this.value;renderRecentView()">
       <select id="recentOutcomeFilter" aria-label="请求结果" onchange="RECENT_FILTERS.outcome=this.value;renderRecentView()">
         <option value="">全部结果</option><option value="completed">完成</option><option value="failed">失败</option><option value="client_aborted">客户端取消</option><option value="upstream_aborted">上游中断</option>
       </select>
@@ -13219,7 +13220,7 @@ async function refreshInner(gen){
   lastRecentFp = recentFp;
   COST_TIP_ROWS.clear();
   const buildRecentTable = tableRows => tableRows.length ?
-    '<table class="data-cards"><thead><tr><th>时间</th><th>模型</th><th>推理强度</th><th>账号</th><th>API Key</th><th>模式</th><th>结果</th><th>耗时</th><th>首字</th><th>速度</th><th>输入</th><th>输出</th><th>思考</th><th>缓存</th><th>总 token</th><th>积分</th><th class="pricing-col" style="color:var(--warn)">估算价格</th></tr></thead><tbody>'
+    '<table class="data-cards"><thead><tr><th>时间</th><th>模型</th><th>推理强度</th><th>账号</th><th>API Key</th><th>来源 IP</th><th>模式</th><th>结果</th><th>耗时</th><th>首字</th><th>速度</th><th>输入</th><th>输出</th><th>思考</th><th>缓存</th><th>总 token</th><th>积分</th><th class="pricing-col" style="color:var(--warn)">估算价格</th></tr></thead><tbody>'
     + tableRows.map((r, i) => {
         // 关闭时不登记悬停明细，也不挂 data-cost-key：列还在（观感不变），
         // 但没有任何可解释的价格，省掉整张表的明细构建与 hover 开销。
@@ -13231,6 +13232,8 @@ async function refreshInner(gen){
         + '<td data-label="推理强度">' + (r.reasoning_effort ? ('<span class="badge-effort">' + esc(r.reasoning_effort) + '</span>') : '<span style="color:var(--dim)">—</span>') + '</td>'
         + '<td class="mono" style="font-size:11px;color:var(--dim)" data-label="账号" title="' + esc(r.account||'') + '">' + esc(acctName(r.account)) + '</td>'
         + '<td class="mono" style="font-size:11px;color:var(--dim)" data-label="API Key" title="' + esc(r.key||'') + '">' + esc(r.key_name || '—') + '</td>'
+        // 来源 IP：老行没有这个字段，显示 —；title 放全文，窄屏也不丢信息。
+        + '<td class="mono" style="font-size:11px;color:var(--dim)" data-label="来源 IP" title="' + esc(r.client_ip||'') + '">' + esc(r.client_ip || '—') + '</td>'
         + '<td data-label="模式"><span class="badge ' + (r.stream?'s':'') + '">' + (r.stream?'流式':'非流式') + '</span></td>'
         + '<td data-label="结果">' + outcomeBadge(r) + '</td>'
         + '<td data-label="耗时">' + ms(r.elapsed_ms) + '</td>'
@@ -13294,7 +13297,7 @@ function renderRecentView(){
     const q = RECENT_FILTERS.query.trim().toLowerCase();
     const outcome = r.outcome || (r.error ? 'failed' : 'completed');
     if(RECENT_FILTERS.outcome && outcome !== RECENT_FILTERS.outcome) return false;
-    return !q || [r.model, RECENT_RENDER.acctName(r.account), r.account, r.key_name].some(v => String(v || '').toLowerCase().includes(q));
+    return !q || [r.model, RECENT_RENDER.acctName(r.account), r.account, r.key_name, r.client_ip].some(v => String(v || '').toLowerCase().includes(q));
   });
   const count = document.getElementById('recentFilterCount');
   if(count) count.textContent = (RECENT_FILTERS.query || RECENT_FILTERS.outcome)
