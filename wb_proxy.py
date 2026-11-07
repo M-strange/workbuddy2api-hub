@@ -7423,6 +7423,162 @@ def _usage_by_account_uncached():
     for item in out:
         item["models"] = sorted(item["models"].items(), key=lambda kv: -kv[1])[:5]
     return out
+
+
+# ---- 按来源 IP 聚合（面板「来源 IP」）------------------------------------
+# 与 usage_by_account() 同构：一条缓存 + TTL，折算是增量的，重建在锁内做。
+# 多攒的是首末时间戳：面板要写「最近活动」，请求数/token 看不出来这个。
+# 注意这一份是**全量**视图（不分区域、不带时间窗），理由同 by_account。
+_byclient_cache = {"data": None, "at": 0.0}
+_byclient_lock = threading.Lock()
+
+
+def usage_by_client_ip(ttl=None):
+    """按客户端地址聚合整份 usage 日志（面板「来源 IP」用）。
+
+    client_ip 字段是后加的，旧行没有它；那些行落进「(未知)」桶，见
+    _fold_usage_by_client()。
+    """
+    ttl = _STATS_TTL if ttl is None else ttl
+    now = time.time()
+    with _byclient_lock:
+        if _byclient_cache["data"] is not None and (now - _byclient_cache["at"]) < ttl:
+            return _byclient_cache["data"]
+        data = _usage_by_client_uncached()
+        _byclient_cache["at"] = time.time()
+        _byclient_cache["data"] = data
+    return data
+
+
+def usage_by_client_ip_etag():
+    """usage_by_client_ip() 当前缓存条目的 ETag；没有条目时返回 None。
+
+    这个视图只有一条缓存（没有窗口/区域参数），所以键是常量；配对调用由
+    _json_cached() 负责，理由见那里。
+    """
+    with _byclient_lock:
+        if _byclient_cache["data"] is None:
+            return None
+        built_at = _byclient_cache["at"]
+    return _cache_etag("by-client-ip", "all", built_at)
+
+
+_byclient_state = {"buckets": None, "offset": 0, "key": None, "tail": b""}
+# 独立的锁：wrapper 持着 _byclient_lock 进来重建，而测试/基准会直接调
+# _usage_by_client_uncached()；共用一把非重入锁会死锁（by_account 那边的教训）。
+_byclient_state_lock = threading.Lock()
+
+
+def _fold_usage_by_client(row, buckets):
+    """把一行折进按 IP 的桶。
+
+    跳过条件与按账号的折叠一致：error 行没有可计费用量。没有 client_ip 的行
+    落进「(未知)」——那一桶就是「IP 字段上线前」的证据，不是解析失败。
+    """
+    if row.get("error"):
+        return
+    key = row.get("client_ip") or "(未知)"
+    at = row.get("at") or 0
+    bucket = buckets.get(key)
+    if bucket is None:
+        bucket = buckets[key] = {
+            "ip": key, "requests": 0, "prompt_tokens": 0,
+            "completion_tokens": 0, "reasoning_tokens": 0,
+            "cached_tokens": 0, "total_tokens": 0,
+            "models": {}, "accounts": {},
+            "first_at": at, "last_at": at,
+        }
+    bucket["requests"] += 1
+    bucket["prompt_tokens"] += row.get("prompt_tokens") or 0
+    bucket["completion_tokens"] += row.get("completion_tokens") or 0
+    bucket["reasoning_tokens"] += row.get("reasoning_tokens") or 0
+    bucket["cached_tokens"] += row.get("cached_tokens") or 0
+    bucket["total_tokens"] += row.get("total_tokens") or 0
+    model = row.get("model") or "?"
+    models = bucket["models"]
+    models[model] = models.get(model, 0) + 1
+    account = row.get("account")
+    if account:
+        accounts = bucket["accounts"]
+        accounts[account] = accounts.get(account, 0) + 1
+    if at:
+        if not bucket["first_at"] or at < bucket["first_at"]:
+            bucket["first_at"] = at
+        if at > bucket["last_at"]:
+            bucket["last_at"] = at
+
+
+def _usage_by_client_buckets():
+    """折好的按 IP 桶（增量刷新），返回逐条深拷贝的 dict。
+
+    拷贝是必须的：_usage_by_client_uncached() 会把 models/accounts 换成排好序的
+    列表，下一次增量刷新必须还在原处找到计数字典。
+    """
+    with _byclient_state_lock:
+        log_key = _usage_log_key()
+        if _byclient_state["buckets"] is None:
+            # 这个视图不接 checkpoint 适配（_usage_cache_adopt_*）：它是新视图，
+            # 缓存文件里没有对应条目，从零折一次、之后增量就够了。
+            _byclient_state.update({"buckets": {}, "offset": 0, "tail": b""})
+        elif not _log_resume_ok(_byclient_state, log_key):
+            _byclient_state.update({"buckets": {}, "offset": 0, "tail": b""})
+        _byclient_state["key"] = log_key
+        offset, error = _scan_usage_from(
+            _byclient_state["offset"],
+            lambda row: _fold_usage_by_client(row, _byclient_state["buckets"]))
+        buckets = _byclient_state["buckets"]
+        if error is None:
+            _byclient_state["offset"] = offset
+            _byclient_state["tail"] = _log_tail_signature(offset)
+        else:
+            # 出错的那一行可能已经折了一半，下一次从零重来（by_account 同款处理）。
+            log("usage_by_client_ip failed: %s" % error)
+            _byclient_state.update({"buckets": {}, "offset": 0, "tail": b""})
+        out = {k: dict(v, models=dict(v["models"]), accounts=dict(v["accounts"]))
+               for k, v in buckets.items()}
+    return out
+
+
+def _usage_by_client_uncached():
+    """把按 IP 的桶整理成面板载荷。
+
+    两个方向一起给：「ips」回答「谁在用」，「accounts」回答「这个号被哪些
+    客户端用过」。后者是折叠时顺带攒下的（每行加一次），不额外扫日志。
+    """
+    buckets = _usage_by_client_buckets()
+    ips = []
+    per_account = {}
+    for bucket in buckets.values():
+        accounts = bucket["accounts"]
+        ips.append({
+            "ip": bucket["ip"],
+            "requests": bucket["requests"],
+            "prompt_tokens": bucket["prompt_tokens"],
+            "completion_tokens": bucket["completion_tokens"],
+            "reasoning_tokens": bucket["reasoning_tokens"],
+            "cached_tokens": bucket["cached_tokens"],
+            "total_tokens": bucket["total_tokens"],
+            "first_at": bucket["first_at"],
+            "last_at": bucket["last_at"],
+            "models": sorted(bucket["models"].items(), key=lambda kv: -kv[1])[:5],
+            "accounts": sorted(accounts.items(), key=lambda kv: -kv[1])[:8],
+        })
+        for account, requests in accounts.items():
+            item = per_account.get(account)
+            if item is None:
+                item = per_account[account] = {
+                    "account": account, "requests": 0, "ips": {}, "last_at": 0}
+            item["requests"] += requests
+            item["ips"][bucket["ip"]] = item["ips"].get(bucket["ip"], 0) + requests
+            if (bucket["last_at"] or 0) > item["last_at"]:
+                item["last_at"] = bucket["last_at"]
+    ips.sort(key=lambda b: (-b["total_tokens"], -b["requests"]))
+    accounts = sorted(per_account.values(), key=lambda a: -a["requests"])
+    for item in accounts:
+        item["ips"] = sorted(item["ips"].items(), key=lambda kv: -kv[1])[:8]
+    return {"ips": ips, "accounts": accounts}
+
+
 _analytics_cache = {}
 _analytics_lock = threading.Lock()
 
@@ -11438,7 +11594,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "2.0.3",
+        "version": "2.0.4",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -20234,7 +20390,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/2.0.3"
+    server_version = "wb-proxy/2.0.4"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -20998,6 +21154,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_usage_analytics(query)
         if path == "/usage/by-account":
             return self._get_usage_by_account()
+        if path == "/usage/by-client-ip":
+            return self._get_usage_by_client_ip()
         if path == "/usage/remaining":
             return self._get_usage_remaining()
         if path == "/usage/perf":
@@ -21432,6 +21590,14 @@ class Handler(BaseHTTPRequestHandler):
         return self._json_cached_panel(200,
                                  lambda: {"accounts": usage_by_account()},
                                  usage_by_account_etag)
+
+    def _get_usage_by_client_ip(self):
+        if not self._authorized():
+            return
+        # 与 /usage/by-account 同款：载荷挂 TTL + ETag，面板轮询在 TTL 内命中
+        # 同一条缓存 → 校验符不变 → 304。首轮全量折叠一次，之后只折新行。
+        return self._json_cached_panel(200, usage_by_client_ip,
+                                       usage_by_client_ip_etag)
 
     def _get_usage_remaining(self):
         if not self._authorized():

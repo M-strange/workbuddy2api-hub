@@ -24,6 +24,9 @@ async function testAnalyticsPolling() {
   const pending = new Promise(resolve => { release = resolve; });
   const state = {range: 'month'};
   const api = url => { calls.push(url); return pending; };
+  // 只数 analytics 请求：这一轮 loadRange 还会顺带取「来源 IP」面板的载荷
+  // （/usage/by-client-ip，一轮一次），它不该参与「有没有重复发起」的计数。
+  const analyticsCalls = () => calls.filter(u => String(u).indexOf('/usage/analytics') === 0).length;
   const noop = () => {};
   const factory = new Function('state', 'api', '$', 'rangeParams', 'pollUntil',
     'loadPrevSummary', 'renderKpis', 'renderSeriesMeta', 'drawSeries', 'drawSparks',
@@ -32,11 +35,11 @@ async function testAnalyticsPolling() {
     () => 1, () => pending, noop, noop, noop, noop, noop, noop);
   const first = load(true);
   await load(true);
-  assert.strictEqual(calls.length, 2, 'polling must not start a duplicate request');
+  assert.strictEqual(analyticsCalls(), 1, 'polling must not start a duplicate request');
   release({});
   await first;
   await load(true);
-  assert.strictEqual(calls.length, 4, 'polling must resume after completion');
+  assert.strictEqual(analyticsCalls(), 2, 'polling must resume after completion');
 }
 testAnalyticsPolling().catch(err => { console.error(err); process.exitCode = 1; });
 

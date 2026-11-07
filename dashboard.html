@@ -2766,6 +2766,11 @@ if(!window.__NEXT_UI__ && defaultConsoleLayout) {
     '旧代理：': 'Old proxy:',
     '时间': 'Time',
     '来源 IP': 'Source IP',
+    '账号 → 来源 IP': 'Account → source IP',
+    '按客户端地址汇总（全部历史）': 'Aggregated by client address (all history)',
+    '最近活动': 'Last seen',
+    '账号数': 'Accounts',
+    'IP 上线前': 'before IP tracking',
     '明细': 'Details',
     '显示条数:': 'Rows:',
     '普通/体验用户': 'Free/trial user',
@@ -6076,7 +6081,46 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
     </div>
   </section>
 
-  <!-- ====================== ⑤ 折叠区 ====================== -->
+  <!-- ====================== ⑤ 来源 IP（客户端） ====================== -->
+  <!-- 一张表回答两个问题：「谁在烧 token」与「这个号被哪些客户端用过」。
+       数据来自 /usage/by-client-ip：全量视图，不跟区间选择器联动（理由同「按账号」），
+       因为它的用处是认出「同一个人换着号刷」或「一个号被几个人共用」。 -->
+  <section class="panel" id="clientIpPanel">
+    <div class="phead">
+      <h2>来源 IP</h2>
+      <span class="hint">按客户端地址汇总（全部历史）</span>
+      <div class="spacer"></div>
+      <button type="button" class="sec mini" id="clientIpRefresh">刷新</button>
+    </div>
+    <div class="pbody" style="overflow-x:auto">
+      <table class="dim" id="clientIpTable">
+        <thead><tr>
+          <th>来源 IP</th>
+          <th class="num">请求</th>
+          <th>Token</th>
+          <th data-label="账号">账号数</th>
+          <th>最近活动</th>
+        </tr></thead>
+        <tbody id="clientIpBody"><tr><td class="skel">加载中…</td></tr></tbody>
+      </table>
+      <details class="fold" id="foldAccountIps" style="margin-top:12px;border:0;box-shadow:none;background:transparent">
+        <summary><h2>账号 → 来源 IP</h2><span class="chev">▶</span></summary>
+        <div class="fbody" style="overflow-x:auto">
+          <table class="dim" id="accountIpTable">
+            <thead><tr>
+              <th>账号</th>
+              <th class="num">请求</th>
+              <th>最近活动</th>
+              <th>来源 IP</th>
+            </tr></thead>
+            <tbody id="accountIpBody"><tr><td class="skel">加载中…</td></tr></tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <!-- ====================== ⑥ 折叠区 ====================== -->
   <div class="folds">
     <details class="fold" id="foldRemainBox">
       <summary><h2>剩余用量估算</h2><span class="chev">▶</span></summary>
@@ -20066,6 +20110,98 @@ async function loadRange(polled){
   drawSparks();
   renderDim();
   loadRecent();
+  loadClientIps();
+}
+
+/* ---------------- 来源 IP（/usage/by-client-ip） ----------------
+   一张表两问：「谁在烧 token」与「这个号被哪些客户端用过」。全量视图，
+   不跟区间选择器联动（理由同「按账号」：区间切了也还是同一批客户端）。
+   载荷带 15 秒 TTL + ETag，5 秒一轮的轮询多数落在 304 上：不重建、不重传。 */
+const escHtml = s => String(s == null ? '' : s).replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let lastClientIpFp = null;
+
+function relAgo(epoch){
+  if(!epoch) return '—';
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - epoch));
+  if(s < 60) return s + ' 秒前';
+  if(s < 3600) return Math.floor(s / 60) + ' 分钟前';
+  if(s < 86400) return Math.floor(s / 3600) + ' 小时前';
+  return Math.floor(s / 86400) + ' 天前';
+}
+
+/* 账号显示名：池子里的昵称优先（analytics 里带着 uid→nickname），
+   没有就退到 uid 前 8 位——聚合载荷只带 uid，没有昵称。 */
+function clientIpAccountLabel(uid){
+  const list = (state.analytics && state.analytics.accounts) || [];
+  const hit = list.find(a => a.uid === uid);
+  if(hit && hit.nickname) return hit.nickname;
+  return String(uid || '').slice(0, 8) || '—';
+}
+
+async function loadClientIps(){
+  try{
+    const data = await api('/usage/by-client-ip');
+    renderClientIps(data);
+  }catch(err){
+    console.error('loadClientIps failed:', err);
+  }
+}
+
+function renderClientIps(data){
+  const body = $('clientIpBody');
+  if(!body) return;
+  const ips = (data && data.ips) || [];
+  const accounts = (data && data.accounts) || [];
+  // 指纹守卫：载荷没变就不碰 DOM（面板 5 秒一轮，重写几十行 innerHTML 是白付的）。
+  const fp = JSON.stringify(data);
+  if(fp === lastClientIpFp && body.innerHTML) return;
+  lastClientIpFp = fp;
+
+  if(!ips.length){
+    body.innerHTML = '<tr><td colspan="5" class="skel">暂无数据</td></tr>';
+  }else{
+    const top = ips.slice(0, 30);
+    const maxTok = Math.max(1, ...top.map(r => r.total_tokens || 0));
+    body.innerHTML = top.map(r => {
+      const accts = r.accounts || [];
+      const chips = accts.slice(0, 3).map(function(pair){
+        const uid = pair[0], n = pair[1];
+        return '<span style="display:inline-block;padding:1px 5px;margin:1px 3px 1px 0;border:1px solid var(--line);border-radius:4px;font-size:10.5px;color:var(--dim);white-space:nowrap" data-tip="' + escHtml(uid) + '">' + escHtml(clientIpAccountLabel(uid)) + ' ×' + n + '</span>';
+      }).join('');
+      const more = accts.length > 3 ? '<span style="font-size:10.5px;color:var(--dim2)">…</span>' : '';
+      const legacy = r.ip === '(未知)' ? ' <span style="font-size:10px;color:var(--dim2)">IP 上线前</span>' : '';
+      const models = (r.models || []).map(function(pair){ return pair[0] + ' ×' + pair[1]; }).join(' · ');
+      const pct = (r.total_tokens || 0) / maxTok * 100;
+      return '<tr>'
+        + '<td class="mono" data-label="来源 IP"' + (models ? ' data-tip="' + escHtml(models) + '"' : '') + '>' + escHtml(r.ip) + legacy + '</td>'
+        + '<td class="num">' + numSpan(r.requests) + '</td>'
+        + '<td><div class="tokcell"><span class="t">' + numSpan(r.total_tokens) + '</span><div class="minibar"><i style="width:' + Math.max(2, pct) + '%;--bar-color:var(--accent)"></i></div></div></td>'
+        + '<td data-label="账号"><b style="font-variant-numeric:tabular-nums">' + accts.length + '</b>' + chips + more + '</td>'
+        + '<td data-label="最近活动"><span data-tip="' + escHtml(relAgo(r.last_at)) + '">' + escHtml(fmtTime(r.last_at || 0)) + '</span></td>'
+        + '</tr>';
+    }).join('');
+  }
+
+  const abody = $('accountIpBody');
+  if(!abody) return;
+  if(!accounts.length){
+    abody.innerHTML = '<tr><td colspan="4" class="skel">暂无数据</td></tr>';
+    return;
+  }
+  abody.innerHTML = accounts.slice(0, 60).map(function(r){
+    const list = (r.ips || []).slice(0, 6).map(function(pair){
+      const ip = pair[0], n = pair[1];
+      return '<span class="mono" style="display:inline-block;padding:1px 5px;margin:1px 3px 1px 0;border:1px solid var(--line);border-radius:4px;font-size:10.5px;color:var(--dim);white-space:nowrap">' + escHtml(ip) + ' ×' + n + '</span>';
+    }).join('');
+    const more = (r.ips || []).length > 6 ? '<span style="font-size:10.5px;color:var(--dim2)">…</span>' : '';
+    return '<tr>'
+      + '<td data-label="账号" data-tip="' + escHtml(r.account) + '">' + escHtml(clientIpAccountLabel(r.account)) + '</td>'
+      + '<td class="num">' + numSpan(r.requests) + '</td>'
+      + '<td data-label="最近活动"><span data-tip="' + escHtml(relAgo(r.last_at)) + '">' + escHtml(fmtTime(r.last_at || 0)) + '</span></td>'
+      + '<td data-label="来源 IP">' + list + more + '</td>'
+      + '</tr>';
+  }).join('');
 }
 
 async function loadStatic(){
@@ -20768,6 +20904,12 @@ if(dimColumnsBtn && dimColumnsMenu){
   });
 }
 renderDimColumnsMenu();
+/* 来源 IP 面板的「刷新」：正常轮询已经 5 秒一轮，这个按钮是给「刚发完请求想
+   立刻看一眼是谁发的」用的——不额外传参，服务端 15 秒 TTL 内多半直接 304。 */
+{
+  const btn = $('clientIpRefresh');
+  if(btn) btn.addEventListener('click', function(){ loadClientIps(); });
+}
 window.addEventListener('resize', () => { drawSeries(); drawSparks(); });
 
 /* 数字悬停：复用面板全局 [data-tip] 气泡（ensureHoverTip 的委托监听），
@@ -20803,11 +20945,13 @@ function wbaTick(){
 window.loadAnalytics = wbaTick;            /* 面板 5s 轮询 / 切页 / 回前台统一入口 */
 window.loadAnalyticsMatrix = function(){}; /* 旧性能矩阵已并入本页（性能分位折叠区） */
 window.wbaLoad = wbaTick;                  /* 调试入口 */
+/* 来源 IP 面板的取数/渲染出口（调试用，同时给 tests/_test_client_ip_panel.js 留门）。 */
+window.wbaClientIps = {load: loadClientIps, render: renderClientIps};
 /* 面板每 5 秒扫描全页表格并自动接排序（applyAllTableSorts）：把本页表格登记进
    禁排名单，避免表头被挂上排序箭头、破坏紧凑版式。剩余用量 / 积分扣减 / 积分
    获取三张表沿用原版的排序接线（自带 id 且已登记），不在此列。 */
 if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TABLES.add){
-  ['dimTable', 'foldPerf'].forEach(function(id){ SORT_DENY_TABLES.add(id); });
+  ['dimTable', 'clientIpTable', 'accountIpTable', 'foldPerf'].forEach(function(id){ SORT_DENY_TABLES.add(id); });
 }
 
 })();
