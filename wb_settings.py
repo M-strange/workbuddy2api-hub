@@ -219,6 +219,52 @@ def set_account_queue_seconds(accounts_dir, value):
         save(accounts_dir, data)
     return value
 
+
+# 池子里超过这个比例的账号被**本地熔断**关着时，后台自动跑一次一键测试。
+# 0 = 关闭（默认 50，即「超过一半账号熔断」）。
+#
+# 为什么需要它：熔断/降权/软限流都是本地记账（连续硬失败 3 次起熔断 30 分钟），
+# 而解除它们的唯一证据是「一条真实成功的请求」。池子被打成半瘫之后，剩下的账号
+# 又是同一条线路、同一批上游窗口，很容易一起趴下，接着每个请求都立刻 503，客户端
+# 的重试又把刚恢复的名额抢空——2026-11 生产日志里 248 次 "no usable account" 就是
+# 这么来的。自动探活只解决「本地记账把能用的账号关在门外」这一种情况：风控暂停
+# 期间不探（那是要继续停手），被 403 限制的账号也不探（探了等于换号再打上游）。
+AUTO_PROBE_PERCENT_KEY = "auto_probe_percent"
+#: 值域 0..100（百分比）。0 = 关闭自动探活。
+AUTO_PROBE_PERCENT_DEFAULT = 50
+AUTO_PROBE_PERCENT_MAX = 100
+
+
+def auto_probe_percent(accounts_dir):
+    """超过这个百分比的账号被本地熔断关着时，自动探活一轮。0 = 关闭。
+
+    Unreadable values fall back to the default rather than to 0: this switch is
+    a safety net, and silently turning it off is worse than using the shipped
+    threshold. An explicit 0 in settings.json still disables it.
+    """
+    value = load(accounts_dir).get(AUTO_PROBE_PERCENT_KEY)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return AUTO_PROBE_PERCENT_DEFAULT
+    if value < 0 or value > AUTO_PROBE_PERCENT_MAX:
+        return AUTO_PROBE_PERCENT_DEFAULT
+    return value
+
+
+def set_auto_probe_percent(accounts_dir, value):
+    """Persist the auto-probe threshold. Returns the stored whole percentage."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("auto_probe_percent must be a whole number")
+    if value < 0:
+        raise ValueError("auto_probe_percent cannot be less than 0")
+    if value > AUTO_PROBE_PERCENT_MAX:
+        raise ValueError("auto_probe_percent cannot be more than %d"
+                         % AUTO_PROBE_PERCENT_MAX)
+    with _lock:
+        data = load(accounts_dir)
+        data[AUTO_PROBE_PERCENT_KEY] = value
+        save(accounts_dir, data)
+    return value
+
 # 更稳的会话粘滞键：把「首条 assistant 回复 + 它后面那条 user」也算进会话键。
 #
 # 为什么需要：会话键原本只用【system + 首条 user】，两个开场白相同的会话会算出

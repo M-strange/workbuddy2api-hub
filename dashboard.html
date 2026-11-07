@@ -2815,6 +2815,10 @@ if(!window.__NEXT_UI__ && defaultConsoleLayout) {
     '高并发时每账号的在飞名额会被占满，或者整池刚被上游限流停放几十秒。默认这时立刻回「每个账号都在忙」，客户端看到的是「所有请求同时失败」，重试又去抢刚恢复的名额。设成 10–30 秒，这批请求原地等一个名额再生效：并发数不变，只是这一批慢一点。': 'Under high concurrency every per-account seat can be taken, or the whole pool just got rate-limited by the upstream for a few dozen seconds. By default such requests get "every account is busy" immediately, so the client sees every request failing at once and its retries grab the seats that just came back. Set 10-30 seconds and those requests wait for a seat in place: concurrency stays the same, only this batch is slower.',
     '只在「一个可用账号都挑不出来」时生效；试过一圈账号都失败（上游真故障）不排队，直接报错。预算最长 120 秒，再长客户端自己就先超时了。': 'Only applies when not a single usable account can be picked; a full round of accounts that all failed (a real upstream outage) never queues, it errors out immediately. The budget is capped at 120 seconds - beyond that the client itself times out first.',
     '请输入 0 到 120 的整数（0 = 不排队）': 'Enter a whole number from 0 to 120 (0 = no queueing)',
+    '池子超半数账号熔断时自动探活': 'Probe the pool automatically when over half of it is tripped',
+    '熔断、降权、软限流都是本地记账，而解除它们的唯一证据是一条真实成功的请求。超过这个比例的账号被这类窗口关着时，网关在后台自动跑一次「一键测试」，把其实已经能用的账号立刻放回池子；两次之间至少隔 2 分钟，免得把刚恢复的号又测回去。': 'Breakers, degradation and soft throttles are all local bookkeeping, and the only evidence that lifts them is a request the upstream actually served. When more than this share of the pool is held by those windows, the gateway runs one "test all" in the background and puts the accounts that do work straight back into the pool; runs are at least 2 minutes apart so a just-recovered account is not tripped again.',
+    '风控暂停期间不探（那时要继续停手），被上游 403 限制的账号也不探（探了等于换号再打上游）。填 0 = 关闭自动探活。': 'No probing while a risk-control pause is in effect (the right move then is to stay quiet), and accounts restricted by an upstream 403 are skipped (probing them means hitting the upstream again with another account). 0 = off.',
+    '请输入 0 到 100 的整数（0 = 关闭）': 'Enter a whole number from 0 to 100 (0 = off)',
 '它只防「同一瞬间两个请求压到同一个账号上」（上游按账号+分钟计 token，压一起会回 429、账号被停放）。它治不了「两个开场白相同的会话每轮互换账号」——那种情况每轮都丢缓存，要靠下面的「更稳的会话粘滞键」。': 'It only prevents two requests landing on the same account at the same instant (the upstream meters tokens per account per minute, and piling up there earns a 429 plus a parked account). It does not fix two conversations with the same opening line swapping accounts every turn - those lose their cache each turn and need the stable conversation key below.',
 '1 和 2–10 的实际区别：只有 1 能保证两个同开场白的会话不会同时撞进同一个号；2 以上只是把总容量放大，两个会话又能同时进同一个号（该撞还是撞）；10 在 24 个账号下基本等于「不限」，除非真的同时有 240 个以上请求。日常两三个会话用不到它，保持 0 即可。': 'What 1 versus 2-10 actually changes: only 1 guarantees two conversations with the same opening never share an account at the same time; 2 and above merely raise the total capacity and let those two conversations land on one account again (they still collide); 10 is effectively "unlimited" with 24 accounts unless you really have 240+ simultaneous requests. For two or three everyday conversations you do not need it - leave it at 0.',
 '为什么需要：上游按「账号 + 分钟」计 token，而一个大上下文会话单请求就带十几万 token。两个会话同时压在一个账号上，一分钟内很容易过百万 token，上游回 429；网关随即停放该账号并换号，新账号没有这段对话的前缀缓存，缓存命中率从 99% 掉到 0、首字从 1.5 秒涨到 5-6 秒。设成 1 时两个会话各走各的账号，各自保留缓存。': 'Why this exists: the upstream meters tokens per account per minute, and one large-context turn already carries over a hundred thousand tokens. Two conversations on one account easily pass a million tokens a minute, so the upstream answers 429; the gateway then parks that account and switches, and the new account holds none of the conversation prefix, so the cache hit rate drops from 99% to 0 and time-to-first-byte goes from 1.5s to 5-6s. At 1 each conversation keeps its own account and its own cache.',
@@ -7215,6 +7219,27 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
               秒
             </label>
             <button onclick="saveAccountQueue(this)">保存</button>
+          </div>
+        </div>
+      </section>
+
+      <section data-cat="limits">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">池子超半数账号熔断时自动探活 <em id="setAutoProbeState"></em></h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              熔断、降权、软限流都是本地记账，而解除它们的唯一证据是一条真实成功的请求。超过这个比例的账号被这类窗口关着时，网关在后台自动跑一次「一键测试」，把其实已经能用的账号立刻放回池子；两次之间至少隔 2 分钟，免得把刚恢复的号又测回去。
+            </div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              风控暂停期间不探（那时要继续停手），被上游 403 限制的账号也不探（探了等于换号再打上游）。填 0 = 关闭自动探活。
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              <input id="setAutoProbe" type="number" min="0" max="100" step="1" style="width:90px">
+              %
+            </label>
+            <button onclick="saveAutoProbe(this)">保存</button>
           </div>
         </div>
       </section>
@@ -15176,6 +15201,19 @@ async function loadSettings(showToast){
         accountQueueState.textContent = accountQueue > 0 ? '(' + accountQueue + ' 秒)' : '(不排队)';
         accountQueueState.style.color = accountQueue > 0 ? 'var(--accent2)' : 'var(--dim)';
       }
+      const autoProbe = (typeof data.auto_probe_percent === 'number') ? data.auto_probe_percent : 50;
+      const autoProbeInput = document.getElementById('setAutoProbe');
+      if(autoProbeInput) autoProbeInput.value = autoProbe;
+      const autoProbeState = document.getElementById('setAutoProbeState');
+      if(autoProbeState){
+        const autoProbeLast = (data.auto_probe && data.auto_probe.last) || null;
+        let autoProbeSuffix = '';
+        if(autoProbeLast && autoProbeLast.tested){
+          autoProbeSuffix = '，上次 ' + autoProbeLast.passed + '/' + autoProbeLast.tested + ' 通过';
+        }
+        autoProbeState.textContent = autoProbe > 0 ? ('(超过 ' + autoProbe + '%' + autoProbeSuffix + ')') : '(关闭)';
+        autoProbeState.style.color = autoProbe > 0 ? 'var(--accent2)' : 'var(--dim)';
+      }
       const affinityStableKey = data.affinity_stable_key_enabled === true;
       const affinityStableKeyInput = document.getElementById('setAffinityStableKey');
       if(affinityStableKeyInput) affinityStableKeyInput.checked = affinityStableKey;
@@ -16419,6 +16457,27 @@ async function saveAccountQueue(btn){
   try {
     await postJSON('/settings/save', {account_queue_seconds: value});
     toast(value > 0 ? ('已保存：池子没号时最多等 ' + value + ' 秒') : '已保存：池子没号时不排队', 'ok');
+    loadSettings();
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'bad');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+
+/* 池子超半数账号被本地熔断关着时自动探活：0 = 关闭，1..100 = 百分比阈值。 */
+async function saveAutoProbe(btn){
+  const el = document.getElementById('setAutoProbe');
+  const raw = (el && el.value !== '') ? Number(el.value) : NaN;
+  const value = Math.floor(raw);
+  if(!isFinite(value) || value < 0 || value > 100){
+    toast('请输入 0 到 100 的整数（0 = 关闭）', 'bad');
+    return;
+  }
+  if(btn) btn.disabled = true;
+  try {
+    await postJSON('/settings/save', {auto_probe_percent: value});
+    toast(value > 0 ? ('已保存：超过 ' + value + '% 账号熔断时自动探活') : '已保存：关闭自动探活', 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');

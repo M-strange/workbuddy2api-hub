@@ -11555,6 +11555,9 @@ def runtime_settings_view():
             wb_settings.account_queue_seconds(ACCOUNTS_DIR),
         "account_queue_seconds_max":
             wb_settings.ACCOUNT_QUEUE_SECONDS_MAX,
+        "auto_probe_percent":
+            wb_settings.auto_probe_percent(ACCOUNTS_DIR),
+        "auto_probe": auto_probe_state(),
         "account_inflight": account_inflight_snapshot(),
         "affinity_stable_key_enabled":
             wb_settings.affinity_stable_key_enabled(ACCOUNTS_DIR),
@@ -11598,7 +11601,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "2.0.6",
+        "version": "2.0.7",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -16596,6 +16599,14 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
             account.note_unknown_failure(message)
         else:
             account.note_failure(message)
+        # 这一笔把账号推过熔断阈值时，顺手看一眼池子：被本地窗口关掉的账号超过
+        # 一半就安排一轮后台探活。放在这里而不是只在「池子抽干」处，是为了在还
+        # 没全瘫的时候就把它捞回来（抽干之后每个客户端都在重试，越重试越难恢复）。
+        if float(getattr(account, "breaker_until", 0.0) or 0.0) > time.time():
+            try:
+                maybe_auto_probe(realm, model, reason="account breaker tripped")
+            except Exception:
+                pass
         return True
 
     last_error = None
@@ -17246,6 +17257,12 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
     scope = ""
     if allowed_accounts:
         scope = ("; this API key may use %d account(s)" % len(allowed_accounts))
+    # 池子被抽干：如果丢的是「本地熔断 / 冷却」这类自己记账的窗口，先让后台探活
+    # 一轮。这个请求照旧拿到 503，但几秒后能用的账号就回来了，不会一直全瘫着。
+    try:
+        maybe_auto_probe(realm, model, reason="no usable account")
+    except Exception:
+        pass
     raise RuntimeError("no usable account for realm '%s': every candidate is "
                        "disabled, cooling down, expired, out of upstream quota "
                        "or parked by a local limit%s%s"
@@ -17600,6 +17617,124 @@ def probe_account(account, model=None, timeout=30):
         account.note_error(str(exc)[:80], cooldown=0)
         row["fails"] = int(account.fails)
         return row
+
+# --- 池子自动探活 -----------------------------------------------------------
+#: 两次自动探活之间的最小间隔（秒）。探针本身是真实的上游请求，一被抽干就连着
+#: 测反而会把刚恢复的账号又打回熔断，所以宁可慢一轮。
+AUTO_PROBE_MIN_INTERVAL = 120.0
+_AUTO_PROBE_LOCK = threading.Lock()
+_AUTO_PROBE = {"running": False, "last_at": 0.0, "last": {}}
+
+
+def pool_parked_stats(realm, model=None, now=None):
+    """该区域的已启用账号里，有多少个只是被**本地临时惩罚**关在门外。
+
+    只数「熔断 / 降权 / 软限流冷却 / 模型冷却」：这些都是本地记账，一条真实成功
+    的请求就能清掉，所以值得自动探活。风控限制（403 / 11140）、余额保护、日额度
+    用尽单独计数，不参与触发——前者的正确动作是继续停手，后者探活也解不开。
+    """
+    now = time.time() if now is None else now
+    accounts = [a for a in (POOL.accounts if POOL else [])
+                if (getattr(a, "realm", "") or "") == realm and a.enabled]
+    parked = restricted = blocked = 0
+    for account in accounts:
+        if float(getattr(account, "restricted_until", 0.0) or 0.0) > now:
+            restricted += 1
+            continue
+        if (float(getattr(account, "breaker_until", 0.0) or 0.0) > now
+                or float(getattr(account, "degrade_until", 0.0) or 0.0) > now
+                or float(getattr(account, "cooldown_until", 0.0) or 0.0) > now
+                or (model and account.model_cooldown_until(model) > now)):
+            parked += 1
+            continue
+        # 没有本地惩罚窗口，再看它是不是因为别的原因接不了单（额度耗尽、停用…
+        # 这些探活也解不开）。refresh=False：这条判断在请求路径上，不能顺手去
+        # 刷新临期凭证（那是网络动作）。
+        try:
+            usable = account.ready(model=model, refresh=False)
+        except TypeError:      # 老式 / 桩账号的 ready() 没有 refresh 形参
+            usable = account.ready(model=model)
+        if not usable:
+            blocked += 1
+    return {"total": len(accounts), "parked": parked,
+            "restricted": restricted, "blocked": blocked}
+
+
+def auto_probe_state():
+    """面板读的自动探活状态：是否正在跑、上次触发时刻、上次结果。"""
+    with _AUTO_PROBE_LOCK:
+        return {"running": _AUTO_PROBE["running"],
+                "last_at": _AUTO_PROBE["last_at"],
+                "last": dict(_AUTO_PROBE["last"])}
+
+
+def maybe_auto_probe(realm, model=None, reason=""):
+    """池子里超过一半账号被本地熔断关着时，后台跑一次「一键测试」。
+
+    2026-11 生产：上游按「账号 + 分钟」计 token，突发并发把几个账号压出 429 后
+    它们层层熔断，26 个账号一起 cooling，之后每个请求都立刻拿到 503；客户端的
+    重试又把刚恢复的名额抢空，用户几分钟里看不到任何一次成功响应。而池子里大半
+    账号其实只是被本地窗口关着——一条探针就能判明，成功还能顺手清掉熔断。
+
+    这不是「继续换号重试」：风控连坐暂停期间一律不探（那时要停手），被 403 限制
+    的账号也不出现在探针名单里（见 _auto_probe_worker）。
+    """
+    percent = wb_settings.auto_probe_percent(ACCOUNTS_DIR)
+    if percent <= 0:
+        return False
+    if restriction_hold_remaining(realm) > 0:
+        return False
+    stats = pool_parked_stats(realm, model)
+    if stats["total"] < 2 or not stats["parked"]:
+        return False
+    if stats["parked"] * 100 <= percent * stats["total"]:
+        return False
+    now = time.time()
+    with _AUTO_PROBE_LOCK:
+        if _AUTO_PROBE["running"] or now - _AUTO_PROBE["last_at"] < AUTO_PROBE_MIN_INTERVAL:
+            return False
+        _AUTO_PROBE["running"] = True
+        _AUTO_PROBE["last_at"] = now
+    threading.Thread(target=_auto_probe_worker, args=(realm, model, reason),
+                     name="auto-probe", daemon=True).start()
+    return True
+
+
+def _auto_probe_worker(realm, model, trigger):
+    """后台探活一轮：每个可探测账号发一条最小请求，成功即清掉它的本地惩罚。"""
+    started = time.time()
+    try:
+        model = model or TEST_MODEL_DEFAULT
+        now = time.time()
+        targets = [a for a in (POOL.accounts if POOL else [])
+                   if (getattr(a, "realm", "") or "") == realm and a.enabled
+                   and float(getattr(a, "restricted_until", 0.0) or 0.0) <= now]
+        network = probe_local_network(realm)
+        if not targets or not network.get("ok"):
+            log("auto probe skipped: realm=%s accounts=%d network=%s"
+                % (realm, len(targets), "ok" if network.get("ok") else "DOWN"),
+                level="WARN")
+            return
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(PROBE_CONCURRENCY, len(targets))) as executor:
+            rows = list(executor.map(lambda acc: probe_account(acc, model), targets))
+        passed = sum(1 for row in rows if row.get("ok"))
+        result = {"realm": realm, "model": model, "tested": len(rows),
+                  "passed": passed, "failed": len(rows) - passed,
+                  "elapsed_ms": int((time.time() - started) * 1000),
+                  "trigger": str(trigger or "")[:80]}
+        log("auto probe: realm=%s model=%s tested=%d passed=%d failed=%d in %dms "
+            "(triggered by %s)"
+            % (realm, model, len(rows), passed, len(rows) - passed,
+               result["elapsed_ms"], result["trigger"] or "-"))
+        with _AUTO_PROBE_LOCK:
+            _AUTO_PROBE["last"] = result
+    except Exception as exc:  # 探活是后台动作，任何失败都不许影响请求路径
+        log("auto probe failed: %s" % exc, level="WARN")
+    finally:
+        with _AUTO_PROBE_LOCK:
+            _AUTO_PROBE["running"] = False
+
 
 def extract_session_key(headers, payload):
     key = (
@@ -20438,7 +20573,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/2.0.6"
+    server_version = "wb-proxy/2.0.7"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -23300,6 +23435,17 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self._error(400, str(exc), "invalid_request_error")
             reply["account_queue_seconds"] = value
+        if "auto_probe_percent" in payload:
+            raw = payload.get("auto_probe_percent")
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                return self._error(
+                    400, "auto_probe_percent must be a whole number",
+                    "invalid_request_error")
+            try:
+                value = wb_settings.set_auto_probe_percent(ACCOUNTS_DIR, raw)
+            except ValueError as exc:
+                return self._error(400, str(exc), "invalid_request_error")
+            reply["auto_probe_percent"] = value
         if "affinity_stable_key_enabled" in payload:
             # 更稳的会话粘滞键：严格 JSON 布尔（字符串 "false" 会是真值）。
             raw = payload.get("affinity_stable_key_enabled")
