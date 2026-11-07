@@ -30,21 +30,21 @@ class UpstreamSettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             cfg = wb_settings.upstream_config(directory)
         self.assertEqual(cfg, {
-            "header_timeout_seconds": 120,
-            "idle_timeout_seconds": 300,
+            "header_timeout_seconds": 45,
+            "idle_timeout_seconds": 90,
             "device_token": "",
             "device_token_file": "",
         })
 
     def test_partial_patch_merges_and_persists(self):
         with tempfile.TemporaryDirectory() as directory:
-            wb_settings.set_upstream_config(directory, {"header_timeout_seconds": 45})
+            wb_settings.set_upstream_config(directory, {"header_timeout_seconds": 33})
             cfg = wb_settings.upstream_config(directory)
-            self.assertEqual(cfg["header_timeout_seconds"], 45)
-            self.assertEqual(cfg["idle_timeout_seconds"], 300)
+            self.assertEqual(cfg["header_timeout_seconds"], 33)
+            self.assertEqual(cfg["idle_timeout_seconds"], 90)
             wb_settings.set_upstream_config(directory, {"idle_timeout_seconds": 600})
             cfg = wb_settings.upstream_config(directory)
-            self.assertEqual(cfg["header_timeout_seconds"], 45)
+            self.assertEqual(cfg["header_timeout_seconds"], 33)
             self.assertEqual(cfg["idle_timeout_seconds"], 600)
             wb_settings.set_upstream_config(directory, {"device_token_file": " C:/tmp/tok "})
             self.assertEqual(wb_settings.upstream_config(directory)["device_token_file"],
@@ -71,20 +71,20 @@ class UpstreamSettingsTests(unittest.TestCase):
                                         "device_token": 7,
                                         "device_token_file": None}}, fh)
             cfg = wb_settings.upstream_config(directory)
-            self.assertEqual(cfg["header_timeout_seconds"], 120)
-            self.assertEqual(cfg["idle_timeout_seconds"], 300)
+            self.assertEqual(cfg["header_timeout_seconds"], 45)
+            self.assertEqual(cfg["idle_timeout_seconds"], 90)
             self.assertEqual(cfg["device_token"], "")
             self.assertEqual(cfg["device_token_file"], "")
         with tempfile.TemporaryDirectory() as directory:
             with open(wb_settings.settings_path(directory), "w", encoding="utf-8") as fh:
                 json.dump({"upstream": [], "reserve_credits": 5}, fh)
             self.assertEqual(wb_settings.upstream_config(directory)["idle_timeout_seconds"],
-                             300)
+                             90)
         with tempfile.TemporaryDirectory() as directory:
             with open(wb_settings.settings_path(directory), "w", encoding="utf-8") as fh:
                 fh.write("{not json")
             self.assertEqual(wb_settings.upstream_config(directory)["header_timeout_seconds"],
-                             120)
+                             45)
 
 
 class DeviceTokenTests(unittest.TestCase):
@@ -177,10 +177,10 @@ class StreamTimeoutTests(unittest.TestCase):
     def test_upstream_timeouts_default_and_override(self):
         with tempfile.TemporaryDirectory() as directory:
             with mock.patch.object(wb_proxy, "ACCOUNTS_DIR", directory):
-                self.assertEqual(wb_proxy.upstream_timeouts(), (120.0, 300.0))
+                self.assertEqual(wb_proxy.upstream_timeouts(), (45.0, 90.0))
                 wb_settings.set_upstream_config(directory, {
-                    "header_timeout_seconds": 45, "idle_timeout_seconds": 600})
-                self.assertEqual(wb_proxy.upstream_timeouts(), (45.0, 600.0))
+                    "header_timeout_seconds": 30, "idle_timeout_seconds": 600})
+                self.assertEqual(wb_proxy.upstream_timeouts(), (30.0, 600.0))
 
     def test_apply_stream_idle_timeout_sets_the_socket(self):
         class Sock(object):
@@ -327,7 +327,7 @@ class StreamTimeoutTests(unittest.TestCase):
             with mock.patch.object(wb_proxy, "ACCOUNTS_DIR", directory):
                 view = wb_proxy.runtime_settings_view()
         self.assertIn("upstream", view)
-        self.assertEqual(view["upstream"]["idle_timeout_seconds"], 300)
+        self.assertEqual(view["upstream"]["idle_timeout_seconds"], 90)
 
 
 if __name__ == "__main__":

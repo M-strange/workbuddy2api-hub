@@ -11594,7 +11594,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "2.0.4",
+        "version": "2.0.5",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -16375,8 +16375,13 @@ def upstream_timeouts():
         cfg = wb_settings.upstream_config(ACCOUNTS_DIR)
     except Exception:
         cfg = None
-    header = 120.0
-    idle = 300.0
+    # 45s covers connect/TLS/upload-headers for a ~500KB body; the old 120s
+    # meant a stalled upstream held a request (and its concurrency slot) for two
+    # minutes before the retry even started. 90s of stream silence is already
+    # 60x the observed reasoning-frame interval (~40ms), so it only fires on a
+    # genuinely dead stream.
+    header = 45.0
+    idle = 90.0
     if isinstance(cfg, dict):
         try:
             header = float(cfg.get("header_timeout_seconds") or header)
@@ -20390,7 +20395,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/2.0.4"
+    server_version = "wb-proxy/2.0.5"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。

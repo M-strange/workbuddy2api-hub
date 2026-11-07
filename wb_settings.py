@@ -1574,8 +1574,8 @@ def set_ui_language(accounts_dir, value):
 
 
 UPSTREAM_DEFAULTS = {
-    "header_timeout_seconds": 120,
-    "idle_timeout_seconds": 300,
+    "header_timeout_seconds": 45,
+    "idle_timeout_seconds": 90,
     "device_token": "",
     "device_token_file": "",
 }
