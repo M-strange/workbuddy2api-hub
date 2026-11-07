@@ -8,7 +8,9 @@
     都中招）。
   - GatewayServer.request_queue_size：stdlib 默认 backlog=5，突发并发下内核来
     不及 accept 的 SYN 被丢弃、客户端按 1s 粒度重传（真机 64 并发突发 43/64
-    卡 >=1s；backlog=128 后 0/64）。
+    卡 >=1s；backlog=128 后 0/64）。队列深度后来提到 1024：几百个客户端同时
+    重连（客户端重启 / 上游掐连接后的批量重试）时 128 仍会溢出，而队列条目只占
+    内核内存、不占服务端线程，加深几乎零成本。
   - MAX_PAYLOAD_BYTES 默认 50MB -> 16MB：读 body 发生在 chat 信号量 acquire
     之前、线程数又无上限，50MB body 单请求峰值 ~160MB，而路由器可用内存只有
     ~480MB。
@@ -150,7 +152,9 @@ class BacklogTests(unittest.TestCase):
     """并发突发的 1 秒停顿：backlog 必须远高于 stdlib 默认的 5。"""
 
     def test_the_service_class_raises_the_backlog(self):
-        self.assertEqual(P.GatewayServer.request_queue_size, 128)
+        # 128 是「64 并发突发不再卡 1 秒」的门槛；1024 是留给「几百个客户端
+        # 同时重连」的余量（队列条目只占内核内存，不占服务端线程）。
+        self.assertEqual(P.GatewayServer.request_queue_size, 1024)
         self.assertTrue(issubclass(P.GatewayServer, ThreadingHTTPServer))
 
     def test_the_listening_socket_is_listened_with_the_new_backlog(self):

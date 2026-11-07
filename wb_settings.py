@@ -146,6 +146,16 @@ ACCOUNT_MAX_CONCURRENT_KEY = "account_max_concurrent"
 #: 上限值域：0 = 不限；1..10 是「每账号同时几个」。10 只是防手滑的上界。
 ACCOUNT_MAX_CONCURRENT_MAX = 10
 
+# 池子里「暂时」没有可用账号时排队等多久（秒）。默认 0 = 不排队，老安装行为不变。
+#
+# 为什么需要它：两种「暂时没有」在高并发下很常见——每账号的在飞名额全被占满（几秒
+# 就释放），或整池刚被上游 429 停放（几十秒到几分钟）。此时立刻回 503 会让客户端
+# 看到「所有请求同时失败」，而失败重试又会去抢刚恢复的名额，把池子再抢空一次；
+# 排队等一等，客户端看到的只是这一批请求慢了，而不是全挂。
+ACCOUNT_QUEUE_SECONDS_KEY = "account_queue_seconds"
+#: 值域 0..120 秒：再长客户端自己就先超时了，排队也就失去意义。
+ACCOUNT_QUEUE_SECONDS_MAX = 120
+
 
 def account_max_concurrent(accounts_dir):
     """How many chat requests one upstream account may run at once.
@@ -174,6 +184,38 @@ def set_account_max_concurrent(accounts_dir, value):
     with _lock:
         data = load(accounts_dir)
         data[ACCOUNT_MAX_CONCURRENT_KEY] = value
+        save(accounts_dir, data)
+    return value
+
+
+def account_queue_seconds(accounts_dir):
+    """How long a request may wait for an account when the pool has none ready.
+
+    0 (the default) means no waiting: the request fails with the usual 503 the
+    moment every account is cooling down or every per-account seat is taken.
+    Unreadable values fall back to 0 so a hand-edited settings.json can never
+    turn a fast failure into a hidden stall.
+    """
+    value = load(accounts_dir).get(ACCOUNT_QUEUE_SECONDS_KEY)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    if value < 0 or value > ACCOUNT_QUEUE_SECONDS_MAX:
+        return 0
+    return value
+
+
+def set_account_queue_seconds(accounts_dir, value):
+    """Persist the pool-wait budget. Returns the stored whole number."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("account_queue_seconds must be a whole number")
+    if value < 0:
+        raise ValueError("account_queue_seconds cannot be less than 0")
+    if value > ACCOUNT_QUEUE_SECONDS_MAX:
+        raise ValueError("account_queue_seconds cannot be more than %d"
+                         % ACCOUNT_QUEUE_SECONDS_MAX)
+    with _lock:
+        data = load(accounts_dir)
+        data[ACCOUNT_QUEUE_SECONDS_KEY] = value
         save(accounts_dir, data)
     return value
 

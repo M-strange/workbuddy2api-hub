@@ -2810,7 +2810,11 @@ if(!window.__NEXT_UI__ && defaultConsoleLayout) {
     '已关闭出口级瞬时失败退避': 'Egress-level transient backoff off',
 '账号级并发上限': 'Per-account concurrency cap',
 '一个上游账号同时最多接几个请求。0 = 不限（默认，跟没这个功能一样）；1 = 一个账号同时只接一个；N = 一个账号最多同时接 N 个。': 'How many requests one upstream account may serve at once. 0 = unlimited (the default, same as having no such feature); 1 = one request per account at a time; N = up to N at once per account.',
-'整个池子能同时接多少 = 账号数 × N（本机 24 个账号：1 → 24 个，3 → 72 个，10 → 240 个）。超出这个数的请求不排队，直接回「每个账号都在忙」，客户端自己重试。': 'Total capacity = accounts x N (24 accounts here: 1 -> 24, 3 -> 72, 10 -> 240 simultaneous requests). Requests beyond that are not queued: they are answered straight away with "every account is busy" and the client retries.',
+    '整个池子能同时接多少 = 账号数 × N（本机 26 个账号：1 → 26 个，3 → 78 个，10 → 260 个）。超出这个数的请求会先在下面「排队等待」里等名额，等到再发出去；只有排队预算用完才回「每个账号都在忙」。': 'How many requests the whole pool can run at once = accounts × N (26 accounts here: 1 -> 26, 3 -> 78, 10 -> 260). Requests above that wait for a seat in "Queue while the pool is empty" below; only when that budget runs out do they get "every account is busy".',
+    '池子暂时没号时排队等待': 'Queue while the account pool has no free account',
+    '高并发时每账号的在飞名额会被占满，或者整池刚被上游限流停放几十秒。默认这时立刻回「每个账号都在忙」，客户端看到的是「所有请求同时失败」，重试又去抢刚恢复的名额。设成 10–30 秒，这批请求原地等一个名额再生效：并发数不变，只是这一批慢一点。': 'Under high concurrency every per-account seat can be taken, or the whole pool just got rate-limited by the upstream for a few dozen seconds. By default such requests get "every account is busy" immediately, so the client sees every request failing at once and its retries grab the seats that just came back. Set 10-30 seconds and those requests wait for a seat in place: concurrency stays the same, only this batch is slower.',
+    '只在「一个可用账号都挑不出来」时生效；试过一圈账号都失败（上游真故障）不排队，直接报错。预算最长 120 秒，再长客户端自己就先超时了。': 'Only applies when not a single usable account can be picked; a full round of accounts that all failed (a real upstream outage) never queues, it errors out immediately. The budget is capped at 120 seconds - beyond that the client itself times out first.',
+    '请输入 0 到 120 的整数（0 = 不排队）': 'Enter a whole number from 0 to 120 (0 = no queueing)',
 '它只防「同一瞬间两个请求压到同一个账号上」（上游按账号+分钟计 token，压一起会回 429、账号被停放）。它治不了「两个开场白相同的会话每轮互换账号」——那种情况每轮都丢缓存，要靠下面的「更稳的会话粘滞键」。': 'It only prevents two requests landing on the same account at the same instant (the upstream meters tokens per account per minute, and piling up there earns a 429 plus a parked account). It does not fix two conversations with the same opening line swapping accounts every turn - those lose their cache each turn and need the stable conversation key below.',
 '1 和 2–10 的实际区别：只有 1 能保证两个同开场白的会话不会同时撞进同一个号；2 以上只是把总容量放大，两个会话又能同时进同一个号（该撞还是撞）；10 在 24 个账号下基本等于「不限」，除非真的同时有 240 个以上请求。日常两三个会话用不到它，保持 0 即可。': 'What 1 versus 2-10 actually changes: only 1 guarantees two conversations with the same opening never share an account at the same time; 2 and above merely raise the total capacity and let those two conversations land on one account again (they still collide); 10 is effectively "unlimited" with 24 accounts unless you really have 240+ simultaneous requests. For two or three everyday conversations you do not need it - leave it at 0.',
 '为什么需要：上游按「账号 + 分钟」计 token，而一个大上下文会话单请求就带十几万 token。两个会话同时压在一个账号上，一分钟内很容易过百万 token，上游回 429；网关随即停放该账号并换号，新账号没有这段对话的前缀缓存，缓存命中率从 99% 掉到 0、首字从 1.5 秒涨到 5-6 秒。设成 1 时两个会话各走各的账号，各自保留缓存。': 'Why this exists: the upstream meters tokens per account per minute, and one large-context turn already carries over a hundred thousand tokens. Two conversations on one account easily pass a million tokens a minute, so the upstream answers 429; the gateway then parks that account and switches, and the new account holds none of the conversation prefix, so the cache hit rate drops from 99% to 0 and time-to-first-byte goes from 1.5s to 5-6s. At 1 each conversation keeps its own account and its own cache.',
@@ -7175,7 +7179,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
               一个上游账号同时最多接几个请求。0 = 不限（默认，跟没这个功能一样）；1 = 一个账号同时只接一个；N = 一个账号最多同时接 N 个。
             </div>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              整个池子能同时接多少 = 账号数 × N（本机 24 个账号：1 → 24 个，3 → 72 个，10 → 240 个）。超出这个数的请求不排队，直接回「每个账号都在忙」，客户端自己重试。
+              整个池子能同时接多少 = 账号数 × N（本机 26 个账号：1 → 26 个，3 → 78 个，10 → 260 个）。超出这个数的请求会先在下面「排队等待」里等名额，等到再发出去；只有排队预算用完才回「每个账号都在忙」。
             </div>
             <div style="font-size:12px;color:var(--warn);margin-top:4px">
               它只防「同一瞬间两个请求压到同一个账号上」（上游按账号+分钟计 token，压一起会回 429、账号被停放）。它治不了「两个开场白相同的会话每轮互换账号」——那种情况每轮都丢缓存，要靠下面的「更稳的会话粘滞键」。
@@ -7190,6 +7194,27 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
               个 / 账号
             </label>
             <button onclick="saveAccountConcurrent(this)">保存</button>
+          </div>
+        </div>
+      </section>
+
+      <section data-cat="limits">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">池子暂时没号时排队等待 <em id="setAccountQueueState"></em></h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              高并发时每账号的在飞名额会被占满，或者整池刚被上游限流停放几十秒。默认这时立刻回「每个账号都在忙」，客户端看到的是「所有请求同时失败」，重试又去抢刚恢复的名额。设成 10–30 秒，这批请求原地等一个名额再生效：并发数不变，只是这一批慢一点。
+            </div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              只在「一个可用账号都挑不出来」时生效；试过一圈账号都失败（上游真故障）不排队，直接报错。预算最长 120 秒，再长客户端自己就先超时了。
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              <input id="setAccountQueue" type="number" min="0" max="120" step="1" style="width:90px">
+              秒
+            </label>
+            <button onclick="saveAccountQueue(this)">保存</button>
           </div>
         </div>
       </section>
@@ -15143,6 +15168,14 @@ async function loadSettings(showToast){
         accountConcurrentState.textContent = accountConcurrent > 0 ? '(' + accountConcurrent + ' 个 / 账号)' : '(不限)';
         accountConcurrentState.style.color = accountConcurrent > 0 ? 'var(--accent2)' : 'var(--dim)';
       }
+      const accountQueue = (typeof data.account_queue_seconds === 'number') ? data.account_queue_seconds : 0;
+      const accountQueueInput = document.getElementById('setAccountQueue');
+      if(accountQueueInput) accountQueueInput.value = accountQueue;
+      const accountQueueState = document.getElementById('setAccountQueueState');
+      if(accountQueueState){
+        accountQueueState.textContent = accountQueue > 0 ? '(' + accountQueue + ' 秒)' : '(不排队)';
+        accountQueueState.style.color = accountQueue > 0 ? 'var(--accent2)' : 'var(--dim)';
+      }
       const affinityStableKey = data.affinity_stable_key_enabled === true;
       const affinityStableKeyInput = document.getElementById('setAffinityStableKey');
       if(affinityStableKeyInput) affinityStableKeyInput.checked = affinityStableKey;
@@ -16365,6 +16398,27 @@ async function saveAccountConcurrent(btn){
   try {
     await postJSON('/settings/save', {account_max_concurrent: value});
     toast(value > 0 ? ('已保存：每个账号同时最多 ' + value + ' 个请求') : '已保存：账号并发不限', 'ok');
+    loadSettings();
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'bad');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+
+/* 池子暂时没号时的排队预算：0 = 不排队，1..120 = 最多等这么多秒。 */
+async function saveAccountQueue(btn){
+  const el = document.getElementById('setAccountQueue');
+  const raw = (el && el.value !== '') ? Number(el.value) : NaN;
+  const value = Math.floor(raw);
+  if(!isFinite(value) || value < 0 || value > 120){
+    toast('请输入 0 到 120 的整数（0 = 不排队）', 'bad');
+    return;
+  }
+  if(btn) btn.disabled = true;
+  try {
+    await postJSON('/settings/save', {account_queue_seconds: value});
+    toast(value > 0 ? ('已保存：池子没号时最多等 ' + value + ' 秒') : '已保存：池子没号时不排队', 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');

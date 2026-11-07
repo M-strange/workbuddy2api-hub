@@ -11551,6 +11551,10 @@ def runtime_settings_view():
             wb_settings.account_max_concurrent(ACCOUNTS_DIR),
         "account_max_concurrent_max":
             wb_settings.ACCOUNT_MAX_CONCURRENT_MAX,
+        "account_queue_seconds":
+            wb_settings.account_queue_seconds(ACCOUNTS_DIR),
+        "account_queue_seconds_max":
+            wb_settings.ACCOUNT_QUEUE_SECONDS_MAX,
         "account_inflight": account_inflight_snapshot(),
         "affinity_stable_key_enabled":
             wb_settings.affinity_stable_key_enabled(ACCOUNTS_DIR),
@@ -11594,7 +11598,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "2.0.5",
+        "version": "2.0.6",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -15316,6 +15320,30 @@ def bind_account_slot_to_response(response, account):
         release_once()
 
 
+def wait_for_pool_account(pick, seconds):
+    """池子里暂时没有可用账号时，原地排队等一个（见 wb_settings.account_queue_seconds）。
+
+    返回 (got, account)：等到了就是 (True, account)，预算用完还是空就是 (False, None)。
+
+    `pick()` 每次调用都重新扫一遍池子，返回「此刻可用且已占住名额」的账号或 None。
+    先取一次再睡：名额释放、冷却结束都是外部事件，多睡一个 tick 就多慢一个 tick；
+    睡 100ms 是为了让出 GIL —— 这是唯一一个会主动睡眠的派发路径，摆明了告诉运维
+    「这里是排队，不是卡死」。
+    """
+    if seconds <= 0:
+        account = pick()
+        return (account is not None), account
+    deadline = time.monotonic() + seconds
+    while True:
+        account = pick()
+        if account is not None:
+            return True, account
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False, None
+        time.sleep(min(0.1, remaining))
+
+
 def account_inflight_snapshot():
     """{uid: 在飞数}，面板与测试用。"""
     with _ACCOUNT_INFLIGHT_LOCK:
@@ -16589,6 +16617,8 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
     # Panel parity: header/idle timeouts are read once per request, not
     # once per retry, so a settings read never lands in the retry loop.
     header_timeout, idle_timeout = upstream_timeouts()
+    # 池子里暂时没账号时的排队预算，同样一次请求读一次（见账户名额耗尽/整池冷却）。
+    account_queue_for = wb_settings.account_queue_seconds(ACCOUNTS_DIR)
     # Same treatment for the egress-level backoff switch (issue #271): one read
     # per request, and when it is off the retry loop below is byte-for-byte the
     # old path.
@@ -16693,7 +16723,20 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
             time.sleep(min(1.5 * (transient_hits or local_net_hits), 3.0))
             account = pick_account()
         if account is None:
-            break
+            # 池子里暂时没有可用账号：要么全部在冷却/禁用，要么每个账号的在飞名额
+            # 都被占满（并发高峰）。这两种「暂时」都很短（名额随请求结束释放、
+            # 停放是几十秒），立刻 503 会让客户端看到「所有请求同时失败」，重试又
+            # 会把刚恢复的名额再抢空。开 account_queue_seconds 后这批请求原地等一个
+            # 名额，而不是把失败直接甩出去。
+            # 只在「这一轮还没试过任何账号」时排队：试过一圈都失败说明是上游/账号
+            # 真出问题，再排只是让客户端白等。
+            if account_queue_for > 0 and not tried:
+                def _pick_again():
+                    busy.clear()
+                    return pick_account()
+                _, account = wait_for_pool_account(_pick_again, account_queue_for)
+            if account is None:
+                break
         if account.realm != realm:
             if session_key and POOL: POOL.affinity.demote(session_key, account.uid)
             account_slot_release(account)
@@ -20395,7 +20438,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/2.0.5"
+    server_version = "wb-proxy/2.0.6"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -23246,6 +23289,17 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self._error(400, str(exc), "invalid_request_error")
             reply["account_max_concurrent"] = value
+        if "account_queue_seconds" in payload:
+            raw = payload.get("account_queue_seconds")
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                return self._error(
+                    400, "account_queue_seconds must be a whole number",
+                    "invalid_request_error")
+            try:
+                value = wb_settings.set_account_queue_seconds(ACCOUNTS_DIR, raw)
+            except ValueError as exc:
+                return self._error(400, str(exc), "invalid_request_error")
+            reply["account_queue_seconds"] = value
         if "affinity_stable_key_enabled" in payload:
             # 更稳的会话粘滞键：严格 JSON 布尔（字符串 "false" 会是真值）。
             raw = payload.get("affinity_stable_key_enabled")
@@ -26836,15 +26890,18 @@ def _log_startup_summary(args, api_key_generated):
         sys.stdout.flush()
 
 class GatewayServer(ThreadingHTTPServer):
-    """主服务的 HTTP 服务类：只为把 listen backlog 从 stdlib 默认的 5 提到 128。
+    """主服务的 HTTP 服务类：只为把 listen backlog 从 stdlib 默认的 5 提到 1024。
 
     backlog=5 在突发并发下（面板打开一页就是 ~7 个并发请求，多标签更糟）会让
     内核来不及 accept 的 SYN 被丢弃、客户端按 1s 粒度重传，表现为一部分请求整整
     慢 1 秒（路由器实测：64 并发突发 43/64 卡 >=1s、最长 2.8s；backlog=128 后
-    0/64、最长 0.18s）。listen() 在 TCPServer.__init__ 里就被调用，所以必须是
-    类属性——实例化之后再改就晚了。
+    0/64、最长 0.18s）。128 在「几百个客户端一起重连」时仍会溢出（每个连接在
+    队列里排到 accept 之间只占一个条目不占线程，深度成本很低），所以提到 1024；
+    内核侧上限由 net.core.somaxconn 决定，本机 4096、容器里通常 4096，取 1024
+    是为了在最小配置的盒子上也不会被静默截断。listen() 在 TCPServer.__init__
+    里就被调用，所以必须是类属性——实例化之后再改就晚了。
     """
-    request_queue_size = 128
+    request_queue_size = 1024
 
 def _serve_forever(args):
     try:
