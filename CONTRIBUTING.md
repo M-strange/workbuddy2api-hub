@@ -67,6 +67,16 @@
 
 release 流水线是强门禁：打 `v*` 标签时必须拿到该提交**完整测试矩阵逐腿通过**才允许写 release。**main 红了 = 全项目发不出新版**。所以「把 CI 修绿」不是可选项。
 
+**发版操作顺序（维护者）**：
+
+1. 三处版本号同步：`wb_proxy.py` 的 `"version"` 与 `Handler.server_version`、`wrt/openwrt/workbuddy2api/Makefile` 的 `PKG_VERSION`；README 的 `### Unreleased` 段写好条目。
+2. 提交并推送 main，等 main 的 tests 绿。
+3. 打标签推送：`git tag vX.Y.Z && git push origin vX.Y.Z`。
+4. **等 CI 自己建 Draft Release**：`release.yml` 会构建 zip / ipk / apk、生成 `SHA256SUMS`，并把资产传到 draft 上。**不要用 `gh release create` 手工发版**——已存在的正式 release 会让 `write-draft` 直接退出（`vX.Y.Z 已经是一个已发布的 release，本工作流不碰它`）；遇到这种情况先 `gh release delete`（不加 `--cleanup-tag`，保留 tag）再 `gh run rerun <id> --failed`。
+5. 校对 draft 的正文与资产，再 `gh release edit vX.Y.Z --draft=false` 发布。
+6. 发布后 `release-checksums` 自动跑；它若在资产上传完成前就启动会报 `no assets to download`（7 秒失败、不是真错），`gh run rerun <id>` 重跑一次即可。
+7. 部署：以服务账号写 `/run/workbuddy2api-hub-updater/request.json`（`{"action":"install","tag":"vX.Y.Z","version":"X.Y.Z"}`，属主必须是服务账号、mode 600，否则 updater 报「更新请求文件校验失败」），并先删掉旧 `status.json` 再写请求，否则会立刻读到上一版 `succeeded`。
+
 ## 5. 节奏说明
 
 本仓库是 100% Vibe Coding 协同产物、迭代很快（一天多个 PR 很常见）。快不等于省事：上面每一条都是为了让「快」不至于把别人的工作弄丢。多 PR 并行时尤其注意第 0 节的第 2、3 条。
