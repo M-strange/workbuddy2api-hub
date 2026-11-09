@@ -2786,6 +2786,8 @@ if(!window.__NEXT_UI__ && defaultConsoleLayout) {
     '旧代理：': 'Old proxy:',
     '时间': 'Time',
     '来源 IP': 'Source IP',
+    '地区': 'Region',
+    '来源 IP 归属地': 'Source IP region',
     '账号 → 来源 IP': 'Account → source IP',
     '按客户端地址汇总（全部历史）': 'Aggregated by client address (all history)',
     '最近活动': 'Last seen',
@@ -6203,6 +6205,7 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       <table class="dim" id="clientIpTable">
         <thead><tr>
           <th>来源 IP</th>
+          <th>地区</th>
           <th class="num">请求</th>
           <th>Token</th>
           <th data-label="账号">账号数</th>
@@ -7204,6 +7207,27 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
           </div>
         </div>
       </section>
+      <section data-cat="network">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">来源 IP 归属地 <em id="setClientGeoState"></em></h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              把「请求记录」和「来源 IP」里的客户端地址解析成省 / 市（如「江苏 苏州」），内网地址显示「内网」、本机显示「本机」。查询在后台线程里做，受 40 次 / 分钟限速、结果缓存 7 天；面板只读缓存，查不到就空着，绝不影响请求本身。默认开启。
+            </div>
+            <div style="font-size:12px;color:var(--warn);margin-top:4px">
+              开启后客户端地址会发给 ip-api.com 查询（失败时用 whois.pconline.com.cn 兜底），地址因此离开本机；对隐私敏感的部署可以关掉——关闭只停新查询，已经查到的地区照旧显示。
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              <input id="setClientGeo" type="checkbox" style="width:16px;height:16px">
+              显示地区
+            </label>
+            <button onclick="saveClientGeo(this)">保存</button>
+          </div>
+        </div>
+      </section>
+
       <section data-cat="stability">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
@@ -13519,7 +13543,12 @@ async function refreshInner(gen){
         + '<td class="mono" style="font-size:11px;color:var(--dim)" data-label="账号" title="' + esc(r.account||'') + '">' + esc(acctName(r.account)) + '</td>'
         + '<td class="mono" style="font-size:11px;color:var(--dim)" data-label="API Key" title="' + esc(r.key||'') + '">' + esc(r.key_name || '—') + '</td>'
         // 来源 IP：老行没有这个字段，显示 —；title 放全文，窄屏也不丢信息。
-        + '<td class="mono" style="font-size:11px;color:var(--dim)" data-label="来源 IP" title="' + esc(r.client_ip||'') + '">' + esc(r.client_ip || '—') + '</td>'
+        // 地区来自 /usage/recent 的 client_ip_geo（后台查、命中缓存才有），没有就
+        // 只留地址，不占一行空白。
+        + '<td class="mono" style="font-size:11px;color:var(--dim)" data-label="来源 IP" title="' + esc(r.client_ip||'') + '">'
+        +   esc(r.client_ip || '—')
+        +   (r.client_ip_geo ? '<div style="font-size:10px;color:var(--dim2)">' + esc(r.client_ip_geo) + '</div>' : '')
+        + '</td>'
         + '<td data-label="模式"><span class="badge ' + (r.stream?'s':'') + '">' + (r.stream?'流式':'非流式') + '</span></td>'
         + '<td data-label="结果">' + outcomeBadge(r) + '</td>'
         + '<td data-label="耗时">' + ms(r.elapsed_ms) + '</td>'
@@ -13583,7 +13612,7 @@ function renderRecentView(){
     const q = RECENT_FILTERS.query.trim().toLowerCase();
     const outcome = r.outcome || (r.error ? 'failed' : 'completed');
     if(RECENT_FILTERS.outcome && outcome !== RECENT_FILTERS.outcome) return false;
-    return !q || [r.model, RECENT_RENDER.acctName(r.account), r.account, r.key_name, r.client_ip].some(v => String(v || '').toLowerCase().includes(q));
+    return !q || [r.model, RECENT_RENDER.acctName(r.account), r.account, r.key_name, r.client_ip, r.client_ip_geo].some(v => String(v || '').toLowerCase().includes(q));
   });
   const count = document.getElementById('recentFilterCount');
   if(count) count.textContent = (RECENT_FILTERS.query || RECENT_FILTERS.outcome)
@@ -15340,6 +15369,14 @@ async function loadSettings(showToast){
         egressBackoffState.textContent = egressBackoff ? '(已启用)' : '(未启用)';
         egressBackoffState.style.color = egressBackoff ? 'var(--accent2)' : 'var(--dim)';
       }
+      const clientGeo = data.client_geo_enabled !== false;
+      const clientGeoInput = document.getElementById('setClientGeo');
+      if(clientGeoInput) clientGeoInput.checked = clientGeo;
+      const clientGeoState = document.getElementById('setClientGeoState');
+      if(clientGeoState){
+        clientGeoState.textContent = clientGeo ? '(已启用)' : '(已关闭)';
+        clientGeoState.style.color = clientGeo ? 'var(--accent2)' : 'var(--dim)';
+      }
       const holdSec = typeof data.restriction_hold_seconds === 'number' ? data.restriction_hold_seconds : 1800;
       const holdInput = document.getElementById('setRestrictionHoldSeconds');
       if(holdInput) holdInput.value = holdSec;
@@ -16664,6 +16701,20 @@ async function saveEgressBackoff(btn){
   try {
     await postJSON('/settings/save', {egress_backoff_enabled: value});
     toast(value ? '已启用：出口级瞬时失败退避' : '已关闭出口级瞬时失败退避', 'ok');
+    loadSettings();
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'bad');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+async function saveClientGeo(btn){
+  const el = document.getElementById('setClientGeo');
+  const value = !!(el && el.checked);
+  if(btn) btn.disabled = true;
+  try {
+    await postJSON('/settings/save', {client_geo_enabled: value});
+    toast(value ? '已启用：来源 IP 自动显示地区' : '已关闭地区查询（已有缓存保留）', 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');
@@ -20743,7 +20794,7 @@ function renderClientIps(data){
   lastClientIpFp = fp;
 
   if(!ips.length){
-    body.innerHTML = '<tr><td colspan="5" class="skel">暂无数据</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="skel">暂无数据</td></tr>';
   }else{
     const top = ips.slice(0, 30);
     const maxTok = Math.max(1, ...top.map(r => r.total_tokens || 0));
@@ -20759,6 +20810,9 @@ function renderClientIps(data){
       const pct = (r.total_tokens || 0) / maxTok * 100;
       return '<tr>'
         + '<td class="mono" data-label="来源 IP"' + (models ? ' data-tip="' + escHtml(models) + '"' : '') + '>' + escHtml(r.ip) + legacy + '</td>'
+        // 地区由后端从缓存里带（/usage/by-client-ip 的 ips[].geo）；还没查到就空着，
+        // 5 秒后的下一次轮询会补上。
+        + '<td data-label="地区" style="font-size:11px;color:var(--dim2)">' + escHtml(r.geo || '—') + '</td>'
         + '<td class="num">' + numSpan(r.requests) + '</td>'
         + '<td><div class="tokcell"><span class="t">' + numSpan(r.total_tokens) + '</span><div class="minibar"><i style="width:' + Math.max(2, pct) + '%;--bar-color:var(--accent)"></i></div></div></td>'
         + '<td data-label="账号"><b style="font-variant-numeric:tabular-nums">' + accts.length + '</b>' + chips + more + '</td>'

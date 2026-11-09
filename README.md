@@ -23,7 +23,7 @@
 This project is for protocol research and personal use only. Prefer the official client, do not use your primary account, and do not resell or share access.
 
 <p align="center">
-  <a href="https://github.com/M-strange/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v2.1.0-2496ED?style=flat-square" alt="Version 2.1.0"></a>
+  <a href="https://github.com/M-strange/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v2.1.1-2496ED?style=flat-square" alt="Version 2.1.1"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -220,7 +220,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 291 个套件：220 个 Python + 71 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 293 个套件：221 个 Python + 72 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_mobile_check.py` 是独立的 Playwright 手机/桌面布局检查器（需自行安装 Playwright），按需手动运行，不在上面的套件集里。
 - CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12（3.9 是本项目声称的最低版本），Windows 上 python 3.12；推送 `v*` tag 时额外断言 **tag == 源码版本**（`-ci` 演练 tag 豁免）。
 
@@ -254,6 +254,7 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
 
 #### 本分支增强（fork）
 
+- **来源 IP 自动显示地区**：面板「请求记录」的来源 IP 列与「来源 IP」聚合视图现在显示归属地（如「江苏 苏州」），内网地址显示「内网」、本机回环显示「本机」，搜索框也能按地区筛。查询走新增的 `wb_client_geo.py`（ip-api.com 主用、whois.pconline.com.cn 兜底），只在后台线程里跑并受 40 次 / 分钟限速，结果写 `usage/client-geo.json` 缓存 7 天（失败退避 10 分钟、上限 2000 条）。面板只读缓存、查不到就空着——请求路径从不等待这次查询，外部接口挂了也不影响任何请求。开关在「设置 → 网络 → 来源 IP 归属地」（`client_geo_enabled`，默认开；关闭只停新查询，已有缓存照旧显示）。
 - **池子被本地熔断关掉一半以上时自动探活**：新增设置 `auto_probe_percent`（面板「设置 → 稳定性 → 池子超半数账号熔断时自动探活」，0–100 的百分比，默认 50，0 = 关闭）。熔断 / 降权 / 软限流都是本地记账，解除它们的唯一证据是一条真实成功的请求；池子被打到半瘫之后每个请求都立刻 503，而客户端重试又会把刚恢复的名额抢空，用户几分钟里看不到一次成功响应（十天日志里 248 次 `no usable account` 就是这么来的）。现在只要「被本地临时惩罚关着的账号」超过阈值，就在后台跑一轮「一键测试」，成功的账号立刻放回池子。两轮之间至少隔 2 分钟；风控连坐暂停期间不探（那时要停手）；被上游 403 限制的账号不进探针名单（探了等于换号再打上游）。
 
 - **高并发时不再一把打死整个账号池**：新增设置 `account_queue_seconds`（面板「设置 → 稳定性 → 池子暂时没号时排队等待」，0–120 秒，默认 0 = 保持老行为）。此前「每个账号的并发名额被占满」或「整池刚被上游按分钟限流停放」时，请求会立刻 503 `no usable account for realm 'cn': every candidate is disabled, cooling`——十天里这类错误 248 次、占全部请求错误的 29%，客户端看到的是「所有请求同时失败」，而它的重试又会在账号刚恢复的瞬间把新名额抢空，形成越忙越死。开了这个预算后，这批请求原地每 100 毫秒重挑一次账号，最多等 N 秒，等到名额才发出去；只有「挨个账号都试过且全部失败」（上游真故障）才不排队、直接报错。并发数不变，只是这一批慢几秒。

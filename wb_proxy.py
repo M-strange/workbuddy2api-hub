@@ -72,6 +72,7 @@ import wb_accounts
 import wb_activity
 import wb_atrest
 import wb_catalog
+import wb_client_geo
 import wb_codearts
 import wb_egress
 import wb_ipintel
@@ -6792,6 +6793,9 @@ def recent_usage(limit=100, realm=None, page=1):
         r["cost_band_note"] = cost["band_note"] if cost["known"] else None
         r["cost_via_derived"] = (bool(cost["via_derived"]) if cost["known"]
                                  else None)
+    # 来源 IP 的归属地：只读缓存，没缓存的地址在这里排进后台队列，下一次
+    # 轮询就带上（见 client_geo_annotate）。开关关闭时只剩本机 / 内网。
+    client_geo_annotate(page_rows)
     return {
         "total": total,
         "page": page,
@@ -7650,6 +7654,129 @@ def _usage_by_account_uncached():
     return out
 
 
+# ---- 来源 IP 归属地（面板显示用，见 wb_client_geo）-------------------------
+# 这是一条「只读装饰」链路：面板每次轮询把行里的地址交给这里，命中缓存就直接
+# 给标签；没命中就丢进后台队列，由一个限速线程去问 ip-api / pconline，下一次
+# 轮询自然带上。请求路径从不等待这个查询——查不到就是空字符串，面板显示「—」。
+_geo_cache = None
+_geo_cache_lock = threading.Lock()
+_geo_state = {"enabled_at": 0.0, "enabled": True}
+_geo_pending = []          # 待查地址（去重、有上限），由 _geo_worker_loop 消费
+_geo_cond = threading.Condition()
+_geo_worker = {"thread": None}
+
+GEO_QUEUE_MAX = 200        # 面板公网暴露时扫描器会刷出大量一次性地址
+GEO_ENABLED_TTL = 5.0      # 设置文件 5 秒读一次，避免每行都读盘
+
+
+def client_geo_cache():
+    """当前 usage 目录下的归属地缓存（测试会替换 USAGE_DIR，所以按目录重建）。"""
+    global _geo_cache
+    with _geo_cache_lock:
+        if _geo_cache is None or _geo_cache.directory != USAGE_DIR:
+            _geo_cache = wb_client_geo.GeoCache(USAGE_DIR)
+        return _geo_cache
+
+
+def client_geo_enabled():
+    """面板是否查询归属地；5 秒内复用上一次读到的设置。"""
+    now = time.time()
+    if now - _geo_state["enabled_at"] < GEO_ENABLED_TTL:
+        return _geo_state["enabled"]
+    try:
+        value = wb_settings.client_geo_enabled(ACCOUNTS_DIR) is not False
+    except Exception:
+        value = False
+    _geo_state["enabled_at"] = now
+    _geo_state["enabled"] = value
+    return value
+
+
+def reset_client_geo_state():
+    """设置刚被改过：下一次读取重新问设置文件（改动立刻生效）。"""
+    _geo_state["enabled_at"] = 0.0
+
+
+def _geo_enqueue(ips):
+    """把还没查过的公网地址丢给后台线程；去重、限量，绝不阻塞调用方。"""
+    cache = client_geo_cache()
+    with _geo_cond:
+        for ip in ips:
+            ip = str(ip or "").strip()
+            if not wb_client_geo.is_address(ip) or wb_client_geo.local_label(ip):
+                continue
+            if ip in _geo_pending or len(_geo_pending) >= GEO_QUEUE_MAX:
+                continue
+            if cache.record(ip) is not None:
+                continue
+            _geo_pending.append(ip)
+        if not _geo_pending:
+            return
+        thread = _geo_worker["thread"]
+        if thread is None or not thread.is_alive():
+            _geo_worker["thread"] = threading.Thread(
+                target=_geo_worker_loop, name="client-geo", daemon=True)
+            _geo_worker["thread"].start()
+        _geo_cond.notify()
+
+
+def _geo_worker_loop():
+    """消费待查队列：一次一个地址，受限速闸门约束。
+
+    队列空置 5 分钟就退出，不常驻一条永远空转的线程；下一次有地址进来会重新
+    拉起（_geo_enqueue 里判断 is_alive）。
+    """
+    while True:
+        with _geo_cond:
+            while not _geo_pending:
+                if not _geo_cond.wait(timeout=300):
+                    if not _geo_pending:
+                        _geo_worker["thread"] = None
+                        return
+            ip = _geo_pending.pop(0)
+        cache = client_geo_cache()
+        if cache.record(ip) is not None:
+            continue
+        if not client_geo_enabled():
+            # 开关关掉：清空队列，别让线程继续打外部接口。
+            with _geo_cond:
+                _geo_pending.clear()
+            continue
+        if not cache.allow():
+            # 限速窗口满了：放回队首，等 2 秒再来（40 次 / 分钟的闸门）。
+            with _geo_cond:
+                _geo_pending.insert(0, ip)
+                _geo_cond.wait(timeout=2.0)
+            continue
+        try:
+            record = wb_client_geo.lookup(ip)
+        except Exception:
+            record = {}
+        cache.put(ip, record)
+
+
+def client_geo_annotate(rows):
+    """给 /usage/recent 的行补 client_ip_geo，把没缓存的地址排进后台队列。
+
+    关闭开关时仍然显示本机 / 内网：那两个标签是本地判断，不花一次外部请求。
+    """
+    enabled = client_geo_enabled()
+    cache = client_geo_cache() if enabled else None
+    pending = []
+    for row in rows:
+        ip = str(row.get("client_ip") or "").strip()
+        local = wb_client_geo.local_label(ip) if ip else ""
+        if not enabled or local:
+            row["client_ip_geo"] = local
+            continue
+        label = cache.label(ip)
+        row["client_ip_geo"] = label
+        if not label:
+            pending.append(ip)
+    if pending:
+        _geo_enqueue(pending)
+
+
 # ---- 按来源 IP 聚合（面板「来源 IP」）------------------------------------
 # 与 usage_by_account() 同构：一条缓存 + TTL，折算是增量的，重建在锁内做。
 # 多攒的是首末时间戳：面板要写「最近活动」，请求数/token 看不出来这个。
@@ -7771,12 +7898,15 @@ def _usage_by_client_uncached():
     客户端用过」。后者是折叠时顺带攒下的（每行加一次），不额外扫日志。
     """
     buckets = _usage_by_client_buckets()
+    geo_cache = client_geo_cache() if client_geo_enabled() else None
     ips = []
     per_account = {}
     for bucket in buckets.values():
         accounts = bucket["accounts"]
         ips.append({
             "ip": bucket["ip"],
+            "geo": (geo_cache.label(bucket["ip"]) if geo_cache is not None
+                    else wb_client_geo.local_label(bucket["ip"])),
             "requests": bucket["requests"],
             "prompt_tokens": bucket["prompt_tokens"],
             "completion_tokens": bucket["completion_tokens"],
@@ -7801,6 +7931,9 @@ def _usage_by_client_uncached():
     accounts = sorted(per_account.values(), key=lambda a: -a["requests"])
     for item in accounts:
         item["ips"] = sorted(item["ips"].items(), key=lambda kv: -kv[1])[:8]
+    if geo_cache is not None:
+        # 这个视图是聚合后的（地址数量有限），一次把没查过的都排上。
+        _geo_enqueue([item["ip"] for item in ips])
     return {"ips": ips, "accounts": accounts}
 
 
@@ -11788,6 +11921,8 @@ def runtime_settings_view():
             wb_settings.remaining_priority_enabled(ACCOUNTS_DIR),
         "egress_backoff_enabled":
             wb_settings.egress_backoff_enabled(ACCOUNTS_DIR),
+        # 来源 IP 归属地（面板显示用）：默认开，关闭只停新查询，已有缓存照旧显示。
+        "client_geo_enabled": wb_settings.client_geo_enabled(ACCOUNTS_DIR),
         "restriction_hold_seconds":
             int(wb_settings.restriction_hold_seconds(ACCOUNTS_DIR)),
         "restriction_holds":
@@ -11850,7 +11985,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "2.1.0",
+        "version": "2.1.1",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -21278,7 +21413,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/2.1.0"
+    server_version = "wb-proxy/2.1.1"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -22068,6 +22203,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_usage_by_account()
         if path == "/usage/by-client-ip":
             return self._get_usage_by_client_ip()
+        if path == "/ip/geo":
+            return self._get_client_geo(query)
         if path == "/usage/remaining":
             return self._get_usage_remaining()
         if path == "/usage/perf":
@@ -22515,6 +22652,26 @@ class Handler(BaseHTTPRequestHandler):
         # 同一条缓存 → 校验符不变 → 304。首轮全量折叠一次，之后只折新行。
         return self._json_cached_panel(200, usage_by_client_ip,
                                        usage_by_client_ip_etag)
+
+    def _get_client_geo(self, query):
+        """来源 IP 的地区补查：读缓存，并把还没查过的地址排进后台。
+
+        返回的是「此刻知道什么」——不知道的地址下一次轮询就会有值，所以这里
+        不等查询完成：一个外部接口不该拖住面板的一次 5 秒轮询。
+        """
+        if not self._authorized():
+            return
+        raw = (query.get("ips") or [""])[0]
+        ips = [part.strip() for part in raw.replace(" ", ",").split(",")
+               if part.strip()][:50]
+        enabled = client_geo_enabled()
+        cache = client_geo_cache()
+        if enabled:
+            _geo_enqueue(ips)
+        return self._json_panel(200, {
+            "enabled": enabled,
+            "geo": {ip: cache.describe(ip) for ip in ips},
+        })
 
     def _get_usage_remaining(self):
         if not self._authorized():
@@ -24159,6 +24316,16 @@ class Handler(BaseHTTPRequestHandler):
                 # 由下一个请求照常推（此刻就算推也要先折一次剩余估算，没必要
                 # 为一个开关多付这一趟）。
                 POOL.apply_remaining_weights(None)
+        if "client_geo_enabled" in payload:
+            # 来源 IP 归属地开关：纯展示，关掉只停查询。形状与
+            # egress_backoff_enabled 一致——严格 JSON 布尔。
+            raw = payload.get("client_geo_enabled")
+            if not isinstance(raw, bool):
+                return self._error(400, "client_geo_enabled must be true or false",
+                                   "invalid_request_error")
+            wb_settings.set_client_geo_enabled(ACCOUNTS_DIR, raw)
+            reset_client_geo_state()
+            reply["client_geo_enabled"] = raw
         if "realm_fallback_enabled" in payload:
             # 跨出口回退（默认关）：与 remaining_priority_enabled 同一形状——
             # 严格 JSON 布尔，字符串 "false" 会是真值。

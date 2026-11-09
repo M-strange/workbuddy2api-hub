@@ -127,6 +127,12 @@ REMAINING_PRIORITY_ENABLED_KEY = "remaining_priority_enabled"
 # 派发路径上的失败归账与退避尺度，老安装保持原样（传输错误仍喂账号熔断）。
 EGRESS_BACKOFF_ENABLED_KEY = "egress_backoff_enabled"
 
+# 来源 IP 归属地（面板只读）：把请求记录里的客户端地址解析成「江苏 苏州」。
+# 缺失键读作开 —— 这是纯展示信息，查不到就空着，不影响任何派发决定；默认开
+# 是因为「谁在用」这件事本身就是面板要回答的问题。关掉只停查询，已有缓存仍
+# 能显示（关开关不该让面板突然空白）。
+CLIENT_GEO_ENABLED_KEY = "client_geo_enabled"
+
 # 跨出口回退（国际版 → 国内版）：国际版出口把某个模型限流 / 当日额度用满 /
 # 整池冷却时，允许拿同名的国内版出口再试一次。缺失键读作关 —— 两个出口是两套
 # 上游、两套额度、两套积分口径，混用会让「这个 Key 只花国际额度」的部署失去
@@ -2260,6 +2266,28 @@ def set_egress_backoff_enabled(accounts_dir, enabled):
     with _lock:
         data = load(accounts_dir)
         data[EGRESS_BACKOFF_ENABLED_KEY] = enabled
+        save(accounts_dir, data)
+    return enabled
+
+
+def client_geo_enabled(accounts_dir):
+    """Whether the panel resolves the region of a client address.
+
+    On unless the operator turns it off: the answer is decoration only (a
+    provider that is unreachable leaves the column empty, never a failed
+    request), and the lookups run off the request path in a rate-limited
+    background thread (see wb_client_geo). Turning it off stops new lookups;
+    entries already cached stay visible.
+    """
+    return load(accounts_dir).get(CLIENT_GEO_ENABLED_KEY) is not False
+
+
+def set_client_geo_enabled(accounts_dir, enabled):
+    """Persist the client-region switch. Returns the stored boolean."""
+    enabled = bool(enabled)
+    with _lock:
+        data = load(accounts_dir)
+        data[CLIENT_GEO_ENABLED_KEY] = enabled
         save(accounts_dir, data)
     return enabled
 
