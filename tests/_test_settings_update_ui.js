@@ -50,6 +50,7 @@ const SETTINGS = {
   pricing_refresh_minutes: 5,
   auto_switch_product: false,
   daily_chat_web: false,
+  daily_chat_prefer_flash: false,
   local_web_tools: false,
   update_check_enabled: true,
   device_token_status: deviceTokenStatus,
@@ -82,6 +83,9 @@ dom.installDom({
     if(target === '/settings/save') {
       const body = options && options.body ? JSON.parse(options.body) : {};
       const reply = Object.assign({}, saveReply);
+    if(typeof body.daily_chat_prefer_flash === 'boolean'){
+      SETTINGS.daily_chat_prefer_flash = body.daily_chat_prefer_flash;
+    }
       if(body.upstream && typeof body.upstream.device_token_file === 'string'){
         deviceTokenStatus = {
           source: body.upstream.device_token_file ? 'file' : 'none',
@@ -125,6 +129,7 @@ try {
       checkUpdateNow: checkUpdateNow,
       installUpdateNow: installUpdateNow,
       saveUpdateCheckEnabled: saveUpdateCheckEnabled,
+      saveUpdateProxySlot: saveUpdateProxySlot,
       applyUpdateStatus: applyUpdateStatus,
       saveDailyChatModule: saveDailyChatModule,
       resetDailyChatModule: resetDailyChatModule,
@@ -360,6 +365,32 @@ const posts = () => calls.filter(c => c.method === 'POST');
   check('没有走浏览器本地存储（偏好由服务端保存）',
         !calls.some(c => c.url.indexOf('localStorage') !== -1), urls().join(', '));
 
+  // ---- 5b. 更新出口：直连 / 系统代理 / 代理槽三种模式 ----
+  SETTINGS.update_check_proxy_slots = [
+    {id: 'slot-1', label: 'Tokyo', enabled: true},
+  ];
+  SETTINGS.update_check_proxy_slot = '__system__';
+  calls.length = 0;
+  await api.loadSettings(true);
+  await settled();
+  const updateProxy = element('setUpdateProxySlot');
+  check('更新出口下拉包含系统代理选项',
+        updateProxy.innerHTML.includes('value="__system__"'),
+        updateProxy.innerHTML);
+  check('已保存的系统代理模式能正确回填',
+        updateProxy.value === '__system__', updateProxy.value);
+  toasts.length = 0;
+  await api.saveUpdateProxySlot({disabled: false});
+  await settled();
+  const proxySave = posts().filter(c => c.url === '/settings/save');
+  check('系统代理模式提交 __system__',
+        proxySave.length === 1 &&
+        JSON.parse(proxySave[0].body).update_check_proxy_slot === '__system__',
+        proxySave.length ? proxySave[0].body : '(no save)');
+  check('系统代理模式给出对应提示',
+        toasts.length === 1 && String(toasts[0][0]).indexOf('跟随系统代理') !== -1,
+        JSON.stringify(toasts));
+
   // ---- 6. 安装入口受更新状态与人工确认控制 ----
   const installBtn = element('setUpdateInstallBtn');
   updatesPayload = {
@@ -436,6 +467,8 @@ const posts = () => calls.filter(c => c.method === 'POST');
   check('提交每日活跃总开关', body.daily_activity === false, JSON.stringify(body));
   check('提交证书失败改走活跃上报开关',
         body.daily_chat_web_fallback_activity === true, JSON.stringify(body));
+  check('设置页模块保存不再提交优先 Flash 开关',
+        !('daily_chat_prefer_flash' in body), JSON.stringify(body));
   check('候选序列与时段随模块一起提交',
         Array.isArray(body.daily_chat_models) && body.schedule &&
         Array.isArray(body.schedule.daily_chat), JSON.stringify(body));
@@ -460,6 +493,8 @@ const posts = () => calls.filter(c => c.method === 'POST');
         JSON.stringify(resetBody));
   check('推荐值关闭证书失败改走活跃上报',
         resetBody.daily_chat_web_fallback_activity === false, JSON.stringify(resetBody));
+  check('设置页恢复推荐值不再改动优先 Flash 开关',
+        !('daily_chat_prefer_flash' in resetBody), JSON.stringify(resetBody));
   check('恢复推荐值后输入框写回 600', element('setDailyChatBudget').value === '600');
   check('恢复推荐值后回退开关被取消勾选',
         element('setDailyChatActivityFallback').checked === false);

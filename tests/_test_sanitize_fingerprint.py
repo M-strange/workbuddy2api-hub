@@ -515,6 +515,183 @@ class ClaudeCodeIntroFingerprintTests(unittest.TestCase):
         self.assertEqual(body["messages"][1]["content"], "hi")
 
 
+class AnthropicHeaderFingerprintTests(unittest.TestCase):
+    """#733：消息正文里的 Anthropic 头键值与 cc_* 尾部参数。"""
+
+    def test_header_pair_removed(self):
+        self.assertEqual(
+            P.sanitize_text("x-anthropic-billing-hdr: 1.0.0"), "")
+        self.assertEqual(
+            P.sanitize_text("before x-anthropic-billing-hdr: 1.0.0; after"),
+            "before after")
+
+    def test_header_key_is_case_insensitive(self):
+        self.assertEqual(
+            P.sanitize_text("X-ANTHROPIC-BILLING-HDR: abc;"), "")
+
+    def test_cc_parameter_removed(self):
+        self.assertEqual(P.sanitize_text("cc_system_prompt=1;"), "")
+        self.assertEqual(
+            P.sanitize_text("prompt cc_temperature=0.7; tail"),
+            "prompt tail")
+
+    def test_bare_header_is_reduced(self):
+        out = P.sanitize_text("`x-anthropic-billing-hdr`")
+        self.assertEqual(out, "`anthropic-header`")
+        self.assertFalse(P.has_fingerprint(out))
+
+    # #853 / #854：Claude Code 2.1.37+ 把完整键名写进 system 首块。
+    # v2.0.7 只认缩写 `...-hdr`，完整键名被原样留在出站文本里，
+    # 上游把 `x-anthropic-billing-header` 当保留关键字，回 400 / 11128。
+    FULL_HEADER = (
+        "x-anthropic-billing-header: cc_version=2.1.321.abc; "
+        "cc_entrypoint=cli; cch=00000;")
+
+    def test_full_header_line_removed(self):
+        self.assertTrue(P.has_fingerprint(self.FULL_HEADER))
+        out = P.sanitize_text(self.FULL_HEADER)
+        self.assertEqual(out, "")
+        self.assertFalse(P.has_fingerprint(out))
+
+    def test_full_header_line_removed_before_prompt(self):
+        text = self.FULL_HEADER + "\nYou are a helpful AI assistant."
+        self.assertEqual(P.sanitize_text(text), "You are a helpful AI assistant.")
+
+    def test_full_header_line_is_case_insensitive(self):
+        text = self.FULL_HEADER.upper() + "\nKeep this."
+        self.assertEqual(P.sanitize_text(text), "Keep this.")
+
+    def test_full_header_bare_key_is_reduced(self):
+        out = P.sanitize_text("`x-anthropic-billing-header`")
+        self.assertEqual(out, "`anthropic-header`")
+        self.assertFalse(P.has_fingerprint(out))
+
+    def test_header_only_system_message_is_dropped(self):
+        out = P.sanitize_messages([
+            {"role": "system", "content": self.FULL_HEADER},
+            {"role": "user", "content": "hi"},
+        ])
+        self.assertEqual([m["role"] for m in out], ["user"])
+
+    def test_anthropic_messages_path_drops_full_header_block(self):
+        chat = P.messages_to_chat({
+            "model": "deepseek-v4.1-flash",
+            "system": [
+                {"type": "text", "text": self.FULL_HEADER},
+                {"type": "text", "text": "You are a helpful AI assistant."},
+            ],
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 128,
+        })
+        body = P.build_upstream_body(chat)
+        self.assertEqual(body["messages"][0]["content"],
+                         "You are a helpful AI assistant.")
+        self.assertNotIn("x-anthropic-billing-header",
+                         body["messages"][0]["content"])
+
+    def test_user_message_billing_metadata_is_untouched(self):
+        user = "Example:\n" + self.FULL_HEADER + "\nKeep this request unchanged."
+        out = P.sanitize_messages([
+            {"role": "system", "content": self.FULL_HEADER},
+            {"role": "user", "content": user},
+        ])
+        self.assertEqual([m["role"] for m in out], ["user"])
+        self.assertEqual(out[0]["content"], user)
+
+    def test_tool_result_and_arguments_billing_metadata_is_untouched(self):
+        args = json.dumps({
+            "header": "x-anthropic-billing-header: cc_version=2.1.321.abc;",
+            "keep": "tool argument {{literal}}",
+        })
+        result = self.FULL_HEADER + "\nTool result body."
+        original = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": args},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": result},
+        ]
+        out = P.sanitize_messages(original)
+        self.assertEqual(out[0]["tool_calls"][0]["function"]["arguments"], args)
+        self.assertEqual(json.loads(
+            out[0]["tool_calls"][0]["function"]["arguments"]), json.loads(args))
+        self.assertEqual(out[1]["content"], result)
+
+    def test_assistant_history_billing_metadata_is_untouched(self):
+        text = self.FULL_HEADER + "\nAssistant history body."
+        out = P.sanitize_messages([{"role": "assistant", "content": text}])
+        self.assertEqual(out[0]["content"], text)
+
+    def test_system_prose_and_fenced_examples_are_not_stripped(self):
+        prose = (
+            "Before the example.\n"
+            + self.FULL_HEADER
+            + "\nAfter the example."
+        )
+        fenced = "```text\n" + self.FULL_HEADER + "\n```"
+        bare = "Please explain x-anthropic-billing-header before using it."
+        out = P.sanitize_messages([
+            {"role": "system", "content": prose},
+            {"role": "developer", "content": fenced},
+            {"role": "system", "content": bare},
+        ])
+        self.assertEqual(out[0]["content"], prose)
+        self.assertEqual(out[1]["content"], fenced)
+        self.assertEqual(out[2]["content"], bare)
+
+    def test_system_header_plus_same_line_prose_is_conservative(self):
+        text = (
+            "x-anthropic-billing-header: cc_version=2.1.321.abc; "
+            "Keep this instruction."
+        )
+        out = P.sanitize_messages([{"role": "system", "content": text}])
+        self.assertEqual(out[0]["content"], text)
+
+    def test_scoped_cleanup_is_idempotent_and_does_not_mutate_input(self):
+        text = self.FULL_HEADER + "\nYou are a helpful AI assistant."
+        messages = [{"role": "system", "content": text}]
+        before = json.loads(json.dumps(messages))
+        first = P.sanitize_messages(messages)
+        second = P.sanitize_messages(first)
+        self.assertEqual(messages, before)
+        self.assertEqual(first[0]["content"], "You are a helpful AI assistant.")
+        self.assertEqual(second[0]["content"], first[0]["content"])
+
+    def test_system_text_blocks_drop_only_metadata_and_empty_blocks(self):
+        text = "You are a helpful AI assistant."
+        out = P.sanitize_messages([{
+            "role": "system",
+            "content": [
+                {"type": "text", "text": self.FULL_HEADER},
+                {"type": "text", "text": text},
+            ],
+        }])
+        self.assertEqual(out[0]["content"], [{"type": "text", "text": text}])
+
+    def test_system_metadata_only_block_list_drops_whole_message(self):
+        out = P.sanitize_messages([{
+            "role": "system",
+            "content": [{"type": "text", "text": self.FULL_HEADER}],
+        }])
+        self.assertEqual(out, [])
+
+    def test_system_metadata_removal_keeps_non_text_blocks(self):
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+        out = P.sanitize_messages([{
+            "role": "developer",
+            "content": [
+                {"type": "text", "text": self.FULL_HEADER},
+                image,
+            ],
+        }])
+        self.assertEqual(out[0]["content"], [image])
+
+
 if __name__ == "__main__":
     unittest.main()
 
