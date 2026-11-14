@@ -2039,9 +2039,14 @@ html[data-console-layout="on"] #classicTitle {display:none}
 :is(.acct-filterbar,.recent-filterbar) button{min-height:30px}
 :is(.acct-filterbar,.recent-filterbar) .console-filter-count{font-size:12px;color:var(--dim);white-space:nowrap}
 @media (max-width:700px){
-  :is(.acct-filterbar,.recent-filterbar){flex-direction:column;align-items:stretch}
-  :is(.acct-filterbar,.recent-filterbar) .console-search,
-  :is(.acct-filterbar,.recent-filterbar) select{width:100%;max-width:none}
+  /* 窄屏沿用面板原有口径：搜索框独占一行、下拉每行两个，不改成纵向堆叠。
+     纵向 flex 会让 .console-search 的 flex-basis（220px）落到高度上，搜索框
+     被撑成一大块空白。这里显式重置 basis，宽度交给 flex-grow。 */
+  :is(.acct-filterbar,.recent-filterbar){align-items:stretch}
+  :is(.acct-filterbar,.recent-filterbar) .console-search{
+    flex:1 1 100%;width:100%;min-width:0;height:auto}
+  :is(.acct-filterbar,.recent-filterbar) select{
+    flex:1 1 40%;width:auto;min-width:120px;max-width:none;height:auto}
 }
 </style>
 <script>
