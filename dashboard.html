@@ -842,6 +842,58 @@ a:hover{text-decoration:underline}
   cursor:pointer;transition:all .15s ease;overflow-wrap:anywhere}
 .page-nav-item:hover{color:var(--fg);background:var(--panel2)}
 .page-nav-item.active{color:var(--fg);background:var(--panel2);border-color:var(--line);font-weight:600}
+.api-access-page{max-width:1320px}
+.api-page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+.api-page-head h2{margin:0;font-size:19px;color:var(--fg);font-family:var(--serif);font-weight:600;letter-spacing:.02em}
+.api-page-head p{margin:5px 0 0;color:var(--dim);font-size:12px;line-height:1.5}
+.api-page-tabs{display:flex;gap:5px;background:var(--panel2);padding:4px;border:1px solid var(--line);border-radius:10px;margin-bottom:16px;width:max-content;max-width:100%;overflow-x:auto}
+.api-page-tab{appearance:none;border:1px solid transparent;background:transparent;color:var(--dim);padding:7px 15px;border-radius:7px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.api-page-tab:hover{color:var(--fg);background:var(--panel)}
+.api-page-tab.active{background:var(--panel);border-color:var(--line);color:var(--fg);font-weight:600;box-shadow:var(--shadow-sm)}
+.api-pane[hidden]{display:none!important}
+.api-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.api-section-head h3{margin:0;font-size:14px;color:var(--fg);font-weight:650}
+.api-section-head p{margin:4px 0 0;color:var(--dim);font-size:11px;line-height:1.5}
+.api-key-create{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;margin:0 0 14px;padding:12px;background:var(--panel2);border:1px solid var(--line);border-radius:10px}
+.api-key-create[hidden]{display:none!important}
+.api-key-create label{display:flex;flex-direction:column;gap:5px;color:var(--dim);font-size:11px}
+.api-key-create input[type=text]{min-width:220px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:7px 9px;color:var(--fg);font:inherit;font-size:12px}
+.api-scope-checks{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.api-scope-checks label{display:inline-flex;flex-direction:row;align-items:center;gap:4px;color:var(--fg2);font-size:11px;white-space:nowrap}
+.api-table{width:100%;border-collapse:collapse;font-size:12px}
+.api-table th{padding:8px 9px;text-align:left;color:var(--dim);font-size:10px;font-weight:650;letter-spacing:.04em;border-bottom:1px solid var(--line);white-space:nowrap}
+.api-table td{padding:10px 9px;border-bottom:1px solid var(--line);vertical-align:middle}
+.api-table tr:last-child td{border-bottom:0}
+.api-table .api-key-name{font-weight:600;color:var(--fg)}
+.api-table .api-key-meta{display:block;color:var(--dim);font-size:10px;margin-top:3px}
+.api-scope-chip{display:inline-block;margin:1px 4px 1px 0;padding:2px 6px;border-radius:999px;color:var(--accent);background:var(--accent-soft);font-size:10px;white-space:nowrap}
+.api-status-dot{display:inline-flex;align-items:center;gap:5px;color:var(--green);font-size:11px}
+.api-status-dot::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.api-status-dot.off{color:var(--dim)}
+.api-secret-reveal{margin:0 0 14px;padding:10px 12px;border:1px solid var(--accent);background:var(--accent-soft);border-radius:9px;color:var(--fg);font-size:12px}
+.api-secret-reveal code{display:block;margin-top:6px;padding:7px 9px;background:var(--panel);border:1px solid var(--line);border-radius:6px;overflow:auto;color:var(--fg);font-size:11px}
+.api-doc-layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:16px;align-items:start}
+.api-doc-list{position:sticky;top:var(--page-nav-top,84px);padding:8px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.api-doc-list-title{padding:5px 9px 8px;color:var(--dim);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.api-doc-item{display:flex;flex-direction:column;align-items:flex-start;gap:4px;width:100%;padding:9px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--dim);font:inherit;text-align:left;cursor:pointer}
+.api-doc-item:hover{background:var(--panel2);color:var(--fg)}
+.api-doc-item.active{background:var(--accent-soft);border-color:var(--accent);color:var(--fg)}
+.api-doc-method{font-family:monospace;font-size:10px;color:var(--accent);font-weight:700}
+.api-doc-path{font-family:monospace;font-size:11px;word-break:break-all;color:var(--fg2)}
+.api-doc-detail section{margin-bottom:14px}
+.api-doc-detail h3{margin:0 0 8px;font-size:13px;color:var(--fg)}
+.api-doc-contract{padding:10px 12px;border-left:3px solid var(--accent);background:var(--panel2);color:var(--dim);font-size:12px;line-height:1.6}
+.api-doc-pre{margin:0;padding:12px;background:var(--terminal-bg);color:var(--terminal-fg);border-radius:8px;overflow:auto;font:11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+.api-param-table{width:100%;border-collapse:collapse;font-size:11px}
+.api-param-table th,.api-param-table td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.api-param-table th{color:var(--dim);font-size:10px}
+@media (max-width:760px){
+  .api-doc-layout{grid-template-columns:1fr;gap:12px}
+  .api-doc-list{position:static;display:flex;gap:6px;overflow-x:auto;padding:7px}
+  .api-doc-list-title{display:none}
+  .api-doc-item{min-width:190px}
+  .api-table{min-width:720px}
+}
 /* 回到顶部：排在区块清单上方，所以留出与清单的间距 */
 button.page-nav-top{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;
   margin-bottom:8px;padding:7px 10px;border-radius:8px;font-size:12px;font-weight:600;
@@ -2016,12 +2068,13 @@ html:not([data-console-layout="on"]) .header-left .console-nav-caption,
 html:not([data-console-layout="on"]) .header-left .console-nav-link {display:none!important}
 html:not([data-console-layout="on"]) #btnNavGateway {order:1}
 html:not([data-console-layout="on"]) #btnNavAccounts {order:2}
-html:not([data-console-layout="on"]) #btnNavTasks {order:3}
-html:not([data-console-layout="on"]) #btnNavMedia {order:4}
-html:not([data-console-layout="on"]) #btnNavAnalytics {order:5}
+html:not([data-console-layout="on"]) #btnNavApi {order:3}
+html:not([data-console-layout="on"]) #btnNavAnalytics {order:4}
+html:not([data-console-layout="on"]) #btnNavTasks {order:5}
 html:not([data-console-layout="on"]) #btnNavAgents {order:6}
-html:not([data-console-layout="on"]) #btnNavSettings {order:7}
-html:not([data-console-layout="on"]) #btnNavLogs {order:8}
+html:not([data-console-layout="on"]) #btnNavMedia {order:7}
+html:not([data-console-layout="on"]) #btnNavSettings {order:8}
+html:not([data-console-layout="on"]) #btnNavLogs {order:9}
 html[data-console-layout="on"] #classicTitle {display:none}
 /* 内容区筛选条（账号列表 / 请求列表）：默认布局也要能用。console 那两套样式表
    默认 media="not all"，关掉 console 布局后筛选条既没有外观、又会被上面的规则
@@ -2236,7 +2289,7 @@ if(!window.__NEXT_UI__ && defaultConsoleLayout) {
   };
 
   // 3. Tab 初始化（与下方主脚本的 MAIN_TABS 保持一致）
-  var TABS = ['overview','gateway','accounts','tasks','media','analytics','agents','settings','logs'];
+  var TABS = ['overview','gateway','accounts','api','analytics','tasks','agents','media','settings','logs'];
   var fallback = window.__NEXT_UI__ ? 'overview' : 'gateway';
   var pick = null;
   try {
@@ -3118,6 +3171,52 @@ if(!window.__NEXT_UI__ && defaultConsoleLayout) {
     '新增': 'Added',
     '新增的行还没有填写 Key': 'The new row has no key yet',
     '新密码': 'New password',
+    'API 接入': 'API access',
+    '接口': 'API',
+    '接口文档': 'API docs',
+    '调用记录': 'Call records',
+    '管理对外 API Key、查看调用记录，并按接口获取可直接复制的请求示例。': 'Manage external API keys, review call records, and copy request examples for each endpoint.',
+    'API 接入模块': 'API access module',
+    'Key 只控制接口权限；国内版 / 国际版由每次请求的 realm 参数决定。': 'Keys only control endpoint permissions; the China or Global version is selected by the realm parameter on each request.',
+    '管理外部 API Key、调用记录和账号接口文档。': 'Manage external API keys, call records, and account API documentation.',
+    '生成 Key': 'Generate key',
+    '正在读取外部 API Key…': 'Reading external API keys…',
+    '正在读取调用记录…': 'Reading call records…',
+    '记录外部 API 的请求时间、接口、调用方和结果；密钥值不会写入记录，超量时自动保留最近 5000 条。': 'External API request time, endpoint, caller and result are recorded; secret values are never written to the log, and only the latest 5,000 records are retained.',
+    '接口列表': 'Endpoints',
+    '账号授权': 'Account authorization',
+    '读取账号': 'Read accounts',
+    '密钥': 'Key',
+    '权限': 'Permissions',
+    '参数': 'Parameter',
+    '类型': 'Type',
+    '必填': 'Required',
+    '是': 'Yes',
+    '调用方': 'Caller',
+    '需要 account:auth': 'Requires account:auth',
+    '需要 account:read': 'Requires account:read',
+    'cn / intl；决定本次授权使用的版本。': 'cn or intl; selects the account version for this authorization.',
+    '创建授权请求时返回的请求标识。': 'Request identifier returned when the authorization request was created.',
+    'cn / intl；筛选账号版本。': 'cn or intl; filters the account version.',
+    '创建账号授权请求': 'Create an account authorization request',
+    '查询账号授权状态': 'Query authorization status',
+    '读取账号列表': 'Read the account list',
+    '传入 cn 或 intl。服务端生成一次性授权链接；浏览器完成登录后，用返回的 request_id 查询结果。': 'Pass cn or intl. The server creates a one-time authorization link; after browser sign-in, use the returned request_id to query the result.',
+    '浏览器登录完成前返回 pending；成功后返回脱敏账号资料。终态会短暂保留，重复查询仍可读取。': 'The response is pending until browser sign-in finishes; success returns redacted account details. The terminal state is retained briefly and can be queried again.',
+    'realm 是必填查询参数，只能取 cn 或 intl。返回指定版本的账号脱敏信息，不返回任何 token 或代理凭据。': 'realm is required and must be cn or intl. The response contains redacted accounts for that version and never returns tokens or proxy credentials.',
+    '接口约定': 'Contract',
+    '请求参数': 'Parameters',
+    '完整 cURL 示例': 'Full cURL example',
+    '请求实例': 'Request example',
+    '响应示例': 'Response example',
+    '还没有外部 API Key，点击右上角「+ 新建 API Key」创建。': 'No external API keys yet. Click “+ New API key” in the upper right to create one.',
+    '新 Key 只在这里完整显示一次，请立即复制保存。': 'The new key is shown in full only once. Copy and save it now.',
+    '复制 Key': 'Copy key',
+    '至少选择一个权限': 'Select at least one permission',
+    '外部 API Key 已创建': 'External API key created',
+    '暂无外部 API 调用记录': 'No external API call records yet',
+    '删除后这个 Key 将立即失效，历史调用记录仍会保留。确定删除吗？': 'Deleting this key takes effect immediately; historical call records are kept. Delete it?',
+    'Key 已复制': 'Key copied',
     '新建 API Key': 'New API key',
     '旅行中...': 'Travelling...',
     '旅行归来！待领奖': 'Back home! Reward pending',
@@ -3620,7 +3719,7 @@ if(!window.__NEXT_UI__ && defaultConsoleLayout) {
     '网页通道打卡 (国际版)': 'Web-channel check-in (Global)',
     '网页通道打卡:': 'Web-channel check-in:',
     '网页通道打卡失败:': 'Web-channel check-in failed:',
-    '耗时': 'Time',
+    '耗时': 'Duration',
     '能力': 'Capabilities',
     '能量': 'energy',
     '自': 'from',
@@ -5856,6 +5955,10 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c.4-3.2 2.4-5 5.5-5s5.1 1.8 5.5 5"/><circle cx="17" cy="9" r="2.4"/><path d="M15.5 14.5c2.7.2 4.3 1.8 4.8 4.5"/></svg>
         <span>账号</span>
       </button>
+      <button type="button" class="next-nav-item" data-next-tab="api" onclick="nextGo('api')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 7h8M8 12h8M8 17h5"/><rect x="4" y="3" width="16" height="18" rx="2.5"/></svg>
+        <span>接口</span>
+      </button>
       <button type="button" class="next-nav-item" data-next-tab="analytics" onclick="nextGo('analytics')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V5M4 19h16"/><path d="M7 15l3.5-4 3 2.5L20 7"/></svg>
         <span>用量</span>
@@ -5931,26 +6034,29 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
       <button class="main-nav-btn" id="btnNavAccounts" onclick="switchMainTab('accounts')">
         账号
       </button>
+      <button class="main-nav-btn" id="btnNavApi" onclick="switchMainTab('api')">
+        接口
+      </button>
       <button type="button" class="console-nav-link" id="btnNavModels" onclick="openModelCatalog()">模型管理</button>
       <button class="main-nav-btn" id="btnNavTasks" onclick="switchMainTab('tasks')">
-        任务与福利
+        自动化
       </button>
     </div>
     <div class="console-nav-group">
       <div class="console-nav-caption">监控与统计</div>
       <button class="main-nav-btn" id="btnNavMedia" onclick="switchMainTab('media')">媒体</button>
       <button class="main-nav-btn" id="btnNavAnalytics" onclick="switchMainTab('analytics')">
-        数据看板
+        用量
       </button>
       <button type="button" class="console-nav-link" id="btnNavRequests" onclick="openRecentRequests()">请求记录</button>
       <button class="main-nav-btn" id="btnNavLogs" onclick="switchMainTab('logs')">
-        运行日志
+        日志
       </button>
     </div>
     <div class="console-nav-group">
       <div class="console-nav-caption">配置中心</div>
       <button class="main-nav-btn" id="btnNavAgents" onclick="switchMainTab('agents')">
-        智能体配置
+        智能体
       </button>
       <button class="main-nav-btn" id="btnNavSettings" onclick="switchMainTab('settings')">
         设置
@@ -8227,6 +8333,74 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
   </div>
 
 
+  <div id="pageApi" class="main-page api-access-page">
+    <div class="api-page-head">
+      <div>
+        <h2>API 接入</h2>
+        <p>管理对外 API Key、查看调用记录，并按接口获取可直接复制的请求示例。</p>
+      </div>
+    </div>
+    <div class="api-page-tabs" role="tablist" aria-label="API 接入模块">
+      <button type="button" class="api-page-tab active" id="apiKeyTab" role="tab" aria-selected="true" onclick="selectExternalApiPanel('keys', this)">API Key</button>
+      <button type="button" class="api-page-tab" id="apiDocsTab" role="tab" aria-selected="false" onclick="selectExternalApiPanel('docs', this)">接口文档</button>
+    </div>
+
+    <div id="apiPaneKeys" class="api-pane">
+      <section>
+        <div class="api-section-head">
+          <div>
+            <h3>API Key</h3>
+            <p>Key 只控制接口权限；国内版 / 国际版由每次请求的 realm 参数决定。</p>
+          </div>
+          <button type="button" onclick="toggleExternalApiKeyForm()">+ 新建 API Key</button>
+        </div>
+        <div id="externalApiKeyForm" class="api-key-create" hidden>
+          <label>名称
+            <input id="externalApiKeyName" type="text" placeholder="例如：自动化服务" maxlength="64">
+          </label>
+          <div class="api-scope-checks">
+            <label><input id="externalScopeAuth" type="checkbox" checked> account:auth</label>
+            <label><input id="externalScopeRead" type="checkbox" checked> account:read</label>
+          </div>
+          <button type="button" onclick="createExternalApiKey(this)">生成 Key</button>
+          <button type="button" class="sec" onclick="toggleExternalApiKeyForm(false)">取消</button>
+        </div>
+        <div id="externalApiSecretReveal" class="api-secret-reveal" hidden></div>
+        <div id="externalApiKeys"><div class="empty">正在读取外部 API Key…</div></div>
+      </section>
+
+      <section>
+        <div class="api-section-head">
+          <div>
+            <h3>调用记录</h3>
+            <p>记录外部 API 的请求时间、接口、调用方和结果；密钥值不会写入记录，超量时自动保留最近 5000 条。</p>
+          </div>
+          <button type="button" class="sec mini" onclick="loadExternalApiRecords()">刷新</button>
+        </div>
+        <div id="externalApiRecords"><div class="empty">正在读取调用记录…</div></div>
+      </section>
+    </div>
+
+    <div id="apiPaneDocs" class="api-pane" hidden>
+      <div class="api-doc-layout">
+        <aside class="api-doc-list" id="apiDocList">
+          <div class="api-doc-list-title">接口列表</div>
+          <button type="button" class="api-doc-item active" data-doc="authorize" onclick="selectExternalApiDoc('authorize', this)">
+            <span class="api-doc-method">POST</span><span class="api-doc-path">/v1/accounts/authorize</span>
+          </button>
+          <button type="button" class="api-doc-item" data-doc="authorize-status" onclick="selectExternalApiDoc('authorize-status', this)">
+            <span class="api-doc-method">GET</span><span class="api-doc-path">/v1/accounts/authorize/{request_id}</span>
+          </button>
+          <button type="button" class="api-doc-item" data-doc="accounts" onclick="selectExternalApiDoc('accounts', this)">
+            <span class="api-doc-method">GET</span><span class="api-doc-path">/v1/accounts?realm=intl</span>
+          </button>
+        </aside>
+        <section class="api-doc-detail" id="apiDocDetail"></section>
+      </div>
+    </div>
+  </div>
+
+
   <div id="pageAgents" class="main-page">
     <div style="margin-bottom:16px">
       <h2 style="margin:0;font-size:17px;color:var(--fg);font-family:var(--serif);font-weight:600;letter-spacing:.02em">智能体配置</h2>
@@ -8385,6 +8559,10 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
     <div class="next-more-handle"></div>
     <div class="next-more-title">更多</div>
     <div class="next-more-grid">
+      <button type="button" class="next-more-item" data-next-tab="api" onclick="nextGo('api')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 7h8M8 12h8M8 17h5"/><rect x="4" y="3" width="16" height="18" rx="2.5"/></svg>
+        <span>接口</span>
+      </button>
       <button type="button" class="next-more-item" data-next-tab="tasks" onclick="nextGo('tasks')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg>
         <span>自动化</span>
@@ -15715,7 +15893,7 @@ function generatePageList(current, total){
 
 // Tab ids in nav order. One list so the restore path and the nav cannot
 // drift apart.
-const MAIN_TABS = ['overview', 'gateway', 'accounts', 'tasks', 'media', 'analytics', 'agents', 'settings', 'logs'];
+const MAIN_TABS = ['overview', 'gateway', 'accounts', 'api', 'analytics', 'tasks', 'agents', 'media', 'settings', 'logs'];
 const MAIN_TAB_STORE = 'wb-proxy-main-tab';
 let currentMainTab = 'gateway';
 let analyticsRange = 'today';
@@ -16402,7 +16580,7 @@ function navPageLabel(row){
   if(window.__NEXT_UI__){
     const nextLabels = {
       gateway: '网关', accounts: '账号', tasks: '自动化', analytics: '用量',
-      agents: '智能体', settings: '设置', logs: '日志'
+      agents: '智能体', api: '接口', settings: '设置', logs: '日志'
     };
     if(nextLabels[row.key]) return nextLabels[row.key];
   }
@@ -16889,8 +17067,8 @@ function toggleConsoleLayout(evt){
 // ==== 全局控制台导航开始 ====
 const CONSOLE_COLLAPSE_KEY = 'wb-console-nav-collapsed';
 const CONSOLE_PAGE_LABELS = {
-  gateway: '运行概览', accounts: '账号管理', tasks: '任务与福利',
-  media: '媒体', analytics: '数据看板', logs: '运行日志', settings: '网关设置', agents: '智能体接入'
+  gateway: '运行概览', accounts: '账号', tasks: '自动化',
+  media: '媒体', analytics: '用量', logs: '日志', settings: '设置', agents: '智能体', api: '接口'
 };
 function consoleNavIsMobile(){
   return !!(window.matchMedia && window.matchMedia('(max-width:760px)').matches);
@@ -20849,6 +21027,7 @@ function switchMainTab(tab){
   const btnLogs = document.getElementById('btnNavLogs');
   const btnSettings = document.getElementById('btnNavSettings');
   const btnAgents = document.getElementById('btnNavAgents');
+  const btnApi = document.getElementById('btnNavApi');
   const pageOverview = document.getElementById('pageOverview');
   const btnMedia = document.getElementById('btnNavMedia');
   const pageGateway = document.getElementById('pageGateway');
@@ -20858,17 +21037,19 @@ function switchMainTab(tab){
   const pageLogs = document.getElementById('pageLogs');
   const pageSettings = document.getElementById('pageSettings');
   const pageAgents = document.getElementById('pageAgents');
+  const pageApi = document.getElementById('pageApi');
   const pageMedia = document.getElementById('pageMedia');
   const tabs = [
     ['overview', btnOverview, pageOverview],
     ['gateway', btnGateway, pageGateway],
     ['accounts', btnAccounts, pageAccounts],
-    ['tasks', btnTasks, pageTasks],
+    ['api', btnApi, pageApi],
     ['analytics', btnAnalytics, pageAnalytics],
-    ['logs', btnLogs, pageLogs],
-    ['settings', btnSettings, pageSettings],
+    ['tasks', btnTasks, pageTasks],
     ['agents', btnAgents, pageAgents],
-    ['media', btnMedia, pageMedia]
+    ['media', btnMedia, pageMedia],
+    ['settings', btnSettings, pageSettings],
+    ['logs', btnLogs, pageLogs]
   ];
   tabs.forEach(([name, btn, page]) => {
     if(!page) return;
@@ -20891,6 +21072,7 @@ function switchMainTab(tab){
   if(tab === 'analytics'){ loadAnalytics(); loadAnalyticsMatrix(); }
   if(tab === 'settings'){ loadSettings(); loadProxySlots(); }
   if(tab === 'agents'){ loadAgents(); }
+  if(tab === 'api'){ loadExternalApiPage(); }
   if(tab === 'media'){ loadMediaPage(); }
   if(tab === 'logs'){
     startLogPolling();
@@ -20899,6 +21081,251 @@ function switchMainTab(tab){
     stopLogPolling();
   }
   restorePageNavHash();
+}
+
+const EXTERNAL_API_SCOPE_LABELS = {
+  'account:auth': '账号授权',
+  'account:read': '读取账号',
+};
+const EXTERNAL_API_DOCS = {
+  authorize: {
+    title: '创建账号授权请求', method: 'POST', path: '/v1/accounts/authorize',
+    scope: 'account:auth',
+    contract: '传入 cn 或 intl。服务端生成一次性授权链接；浏览器完成登录后，用返回的 request_id 查询结果。',
+    params: [
+      ['realm', 'string', '是', 'cn / intl；决定本次授权使用的版本。'],
+    ],
+    request: {method: 'POST', path: '/v1/accounts/authorize', headers: {Authorization: 'Bearer sk-ext-your-key', 'Content-Type': 'application/json'}, body: {realm: 'intl'}},
+    response: {request_id: 'ar_demo_7mQp2x', status: 'pending', realm: 'intl', auth_url: 'https://example.com/login?...'},
+    curl: function(){
+      return [
+        "curl -X POST '" + location.origin + "/v1/accounts/authorize' \\",
+        "  -H 'Authorization: Bearer sk-ext-your-key' \\",
+        "  -H 'Content-Type: application/json' \\",
+        "  -d '{\"realm\":\"intl\"}'"
+      ].join("\n");
+    },
+  },
+  'authorize-status': {
+    title: '查询账号授权状态', method: 'GET', path: '/v1/accounts/authorize/{request_id}',
+    scope: 'account:auth',
+    contract: '浏览器登录完成前返回 pending；成功后返回脱敏账号资料。终态会短暂保留，重复查询仍可读取。',
+    params: [
+      ['request_id', 'string', '是', '创建授权请求时返回的请求标识。'],
+    ],
+    request: {method: 'GET', path: '/v1/accounts/authorize/ar_demo_7mQp2x', headers: {Authorization: 'Bearer sk-ext-your-key'}},
+    response: {request_id: 'ar_demo_7mQp2x', status: 'ok', realm: 'intl', account: {uid: 'uid_demo', nickname: '账号昵称', realm: 'intl', enabled: true, health: 'healthy', health_summary: 'healthy'}},
+    curl: function(){
+      return [
+        "curl '" + location.origin + "/v1/accounts/authorize/ar_demo_7mQp2x' \\",
+        "  -H 'Authorization: Bearer sk-ext-your-key'"
+      ].join("\n");
+    },
+  },
+  accounts: {
+    title: '读取账号列表', method: 'GET', path: '/v1/accounts?realm=intl',
+    scope: 'account:read',
+    contract: 'realm 是必填查询参数，只能取 cn 或 intl。返回指定版本的账号脱敏信息，不返回任何 token 或代理凭据。',
+    params: [
+      ['realm', 'query string', '是', 'cn / intl；筛选账号版本。'],
+    ],
+    request: {method: 'GET', path: '/v1/accounts?realm=intl', headers: {Authorization: 'Bearer sk-ext-your-key'}, query: {realm: 'intl'}},
+    response: {object: 'list', realm: 'intl', accounts: [{uid: 'uid_demo', nickname: '账号昵称', realm: 'intl', enabled: true, health: 'healthy', health_summary: 'healthy'}]},
+    curl: function(){
+      return [
+        "curl '" + location.origin + "/v1/accounts?realm=intl' \\",
+        "  -H 'Authorization: Bearer sk-ext-your-key'"
+      ].join("\n");
+    },
+  },
+};
+
+function selectExternalApiPanel(panel, button){
+  const isDocs = panel === 'docs';
+  const keyPane = document.getElementById('apiPaneKeys');
+  const docsPane = document.getElementById('apiPaneDocs');
+  const keyTab = document.getElementById('apiKeyTab');
+  const docsTab = document.getElementById('apiDocsTab');
+  if(keyPane) keyPane.hidden = isDocs;
+  if(docsPane) docsPane.hidden = !isDocs;
+  [keyTab, docsTab].forEach(function(tab){
+    if(!tab) return;
+    const active = tab === (button || (isDocs ? docsTab : keyTab));
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  if(isDocs) renderExternalApiDoc(window.EXTERNAL_API_DOC_SELECTED || 'authorize');
+  else { loadExternalApiKeys(); loadExternalApiRecords(); }
+}
+
+function toggleExternalApiKeyForm(force){
+  const form = document.getElementById('externalApiKeyForm');
+  if(!form) return;
+  form.hidden = force === undefined ? !form.hidden : !force;
+  if(!form.hidden){
+    const name = document.getElementById('externalApiKeyName');
+    if(name) name.focus();
+  }
+}
+
+function externalScopeLabels(scopes){
+  return (scopes || []).map(function(scope){
+    return '<span class="api-scope-chip">' + esc(scope) + ' · ' + esc(EXTERNAL_API_SCOPE_LABELS[scope] || scope) + '</span>';
+  }).join('');
+}
+
+function renderExternalApiKeys(data){
+  const box = document.getElementById('externalApiKeys');
+  if(!box) return;
+  const keys = (data && data.keys) || [];
+  if(!keys.length){
+    box.innerHTML = '<div class="empty">还没有外部 API Key，点击右上角「+ 新建 API Key」创建。</div>';
+    return;
+  }
+  box.innerHTML = '<div class="table-wrap"><table class="api-table"><thead><tr>'
+    + '<th>名称</th><th>密钥</th><th>权限</th><th>状态</th><th>创建时间</th><th style="text-align:right">操作</th>'
+    + '</tr></thead><tbody>' + keys.map(function(row){
+      const enabled = row.enabled !== false;
+      return '<tr>'
+        + '<td><span class="api-key-name">' + esc(row.name || '未命名') + '</span><span class="api-key-meta">ID ' + esc(row.id || '—') + '</span></td>'
+        + '<td class="mono">' + esc(row.masked || '—') + '</td>'
+        + '<td>' + (externalScopeLabels(row.scopes) || '—') + '</td>'
+        + '<td><span class="api-status-dot' + (enabled ? '' : ' off') + '">' + (enabled ? '启用' : '停用') + '</span></td>'
+        + '<td>' + esc(row.created_at || '—') + '</td>'
+        + '<td style="text-align:right;white-space:nowrap">'
+        + '<button class="sec mini" onclick="toggleExternalApiKey(\'' + esc(row.id) + '\',' + (!enabled) + ')">' + (enabled ? '停用' : '启用') + '</button> '
+        + '<button class="sec mini" onclick="deleteExternalApiKey(\'' + esc(row.id) + '\')">删除</button>'
+        + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+async function loadExternalApiKeys(){
+  try { renderExternalApiKeys(await getJSON('/api/external/keys')); }
+  catch(e){ const box = document.getElementById('externalApiKeys'); if(box) box.innerHTML = '<div class="empty" style="color:var(--bad)">加载 API Key 失败：' + esc(e.message) + '</div>'; }
+}
+
+async function createExternalApiKey(btn){
+  const name = (document.getElementById('externalApiKeyName') || {}).value || '';
+  const scopes = [];
+  if(document.getElementById('externalScopeAuth')?.checked) scopes.push('account:auth');
+  if(document.getElementById('externalScopeRead')?.checked) scopes.push('account:read');
+  if(!scopes.length){ toast('至少选择一个权限', 'warn'); return; }
+  if(btn) btn.disabled = true;
+  try {
+    const data = await postJSON('/api/external/keys', {action:'create', name:name.trim(), scopes:scopes});
+    const reveal = document.getElementById('externalApiSecretReveal');
+    if(reveal){ reveal.hidden = false; reveal.innerHTML = '<b>新 Key 只在这里完整显示一次，请立即复制保存。</b><code id="externalApiSecretValue">' + esc(data.key || '') + '</code><button class="sec mini" style="margin-top:7px" onclick="copyExternalApiSecret()">复制 Key</button>'; }
+    toggleExternalApiKeyForm(false);
+    const input = document.getElementById('externalApiKeyName'); if(input) input.value = '';
+    await loadExternalApiKeys();
+    toast('外部 API Key 已创建', 'ok');
+  } catch(e){ toast('创建失败：' + e.message, 'bad'); }
+  finally { if(btn) btn.disabled = false; }
+}
+
+async function toggleExternalApiKey(id, enabled){
+  try { await postJSON('/api/external/keys', {action:'update', id:id, enabled:enabled}); await loadExternalApiKeys(); toast(enabled ? 'API Key 已启用' : 'API Key 已停用', 'ok'); }
+  catch(e){ toast('更新失败：' + e.message, 'bad'); }
+}
+
+async function deleteExternalApiKey(id){
+  if(!confirm('删除后这个 Key 将立即失效，历史调用记录仍会保留。确定删除吗？')) return;
+  try { await postJSON('/api/external/keys', {action:'delete', id:id}); await loadExternalApiKeys(); await loadExternalApiRecords(); toast('API Key 已删除', 'ok'); }
+  catch(e){ toast('删除失败：' + e.message, 'bad'); }
+}
+
+async function copyExternalApiSecret(){
+  const el = document.getElementById('externalApiSecretValue');
+  if(!el) return;
+  try { await writeClipboard(el.textContent || ''); toast('Key 已复制', 'ok'); }
+  catch(e){ toast('复制失败：' + e.message, 'bad'); }
+}
+
+const EXTERNAL_API_RECORD_PAGE_SIZE = 20;
+let externalApiRecordPage = 1;
+let externalApiRecordRequestSeq = 0;
+
+function externalApiRecordPagerHtml(page, pages, total){
+  if(pages <= 1) return '';
+  const pageList = typeof generatePageList === 'function'
+    ? generatePageList(page, pages)
+    : Array.from({length: pages}, function(_, index){ return index + 1; });
+  return '<div id="externalApiRecordPagination" style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--dim);flex-wrap:wrap;gap:8px">'
+    + '<div id="externalApiRecordPageInfo">第 ' + page + ' / ' + pages + ' 页 · 共 ' + fmt(total) + ' 条记录</div>'
+    + '<div style="display:inline-flex;gap:5px;align-items:center">'
+    + '<button class="sec mini" id="btnExternalApiRecordPrev" onclick="gotoExternalApiRecordPage(' + (page - 1) + ')"' + (page <= 1 ? ' disabled' : '') + '>上一页</button>'
+    + '<div id="externalApiRecordPageButtons" style="display:inline-flex;gap:3px;align-items:center">'
+    + pageList.map(function(item){
+        if(item === '...') return '<span style="color:var(--dim);padding:0 3px">…</span>';
+        return '<button class="range-btn' + (item === page ? ' active' : '') + '" style="min-width:26px;padding:3px 6px;font-size:11px" onclick="gotoExternalApiRecordPage(' + item + ')">' + item + '</button>';
+      }).join('')
+    + '</div>'
+    + '<button class="sec mini" id="btnExternalApiRecordNext" onclick="gotoExternalApiRecordPage(' + (page + 1) + ')"' + (page >= pages ? ' disabled' : '') + '>下一页</button>'
+    + '</div></div>';
+}
+
+function renderExternalApiRecords(data){
+  const box = document.getElementById('externalApiRecords');
+  if(!box) return;
+  const rows = (data && data.records) || [];
+  const page = Math.max(1, Number(data && data.page) || externalApiRecordPage || 1);
+  const pages = Math.max(1, Number(data && data.pages) || 1);
+  const total = Math.max(0, Number(data && data.total) || rows.length);
+  externalApiRecordPage = Math.min(page, pages);
+  if(!rows.length){ box.innerHTML = '<div class="empty">暂无外部 API 调用记录</div>'; return; }
+  box.innerHTML = '<div class="table-wrap"><table class="api-table"><thead><tr><th>时间</th><th>调用方</th><th>请求</th><th>版本</th><th>结果</th><th>耗时</th></tr></thead><tbody>'
+    + rows.map(function(row){
+      const ok = Number(row.status || 0) >= 200 && Number(row.status || 0) < 400;
+      return '<tr><td class="mono">' + esc(row.iso || '—') + '</td><td>' + esc(row.key_name || '—') + '</td><td class="mono">' + esc((row.method || '') + ' ' + (row.path || '')) + '</td><td>' + esc(row.realm || '—') + '</td><td><span class="api-status-dot' + (ok ? '' : ' off') + '">' + esc(String(row.status || '—')) + '</span></td><td>' + esc(row.elapsed_ms == null ? '—' : row.elapsed_ms + ' ms') + '</td></tr>';
+    }).join('') + '</tbody></table></div>' + externalApiRecordPagerHtml(externalApiRecordPage, pages, total);
+}
+
+async function loadExternalApiRecords(page){
+  if(page !== undefined) externalApiRecordPage = Math.max(1, Number(page) || 1);
+  const requestedPage = externalApiRecordPage;
+  const requestSeq = ++externalApiRecordRequestSeq;
+  try {
+    const data = await getJSON('/api/external/call-records?page=' + requestedPage + '&page_size=' + EXTERNAL_API_RECORD_PAGE_SIZE);
+    if(requestSeq !== externalApiRecordRequestSeq) return;
+    renderExternalApiRecords(data);
+  } catch(e){
+    if(requestSeq !== externalApiRecordRequestSeq) return;
+    const box = document.getElementById('externalApiRecords');
+    if(box) box.innerHTML = '<div class="empty" style="color:var(--bad)">加载调用记录失败：' + esc(e.message) + '</div>';
+  }
+}
+
+function gotoExternalApiRecordPage(page){
+  const target = Math.max(1, Number(page) || 1);
+  if(target === externalApiRecordPage) return;
+  loadExternalApiRecords(target);
+}
+
+function renderExternalApiDoc(id){
+  const doc = EXTERNAL_API_DOCS[id] || EXTERNAL_API_DOCS.authorize;
+  window.EXTERNAL_API_DOC_SELECTED = id in EXTERNAL_API_DOCS ? id : 'authorize';
+  const detail = document.getElementById('apiDocDetail');
+  if(!detail) return;
+  document.querySelectorAll('#apiDocList .api-doc-item').forEach(function(item){ item.classList.toggle('active', item.getAttribute('data-doc') === window.EXTERNAL_API_DOC_SELECTED); });
+  const rows = (doc.params || []).map(function(row){ return '<tr><td class="mono">' + esc(row[0]) + '</td><td>' + esc(row[1]) + '</td><td>' + esc(row[2]) + '</td><td>' + esc(row[3]) + '</td></tr>'; }).join('');
+  detail.innerHTML = '<div class="api-section-head"><div><h3>' + esc(doc.title) + '</h3><p><span class="api-doc-method">' + esc(doc.method) + '</span> <span class="mono">' + esc(doc.path) + '</span></p></div><span class="api-scope-chip">需要 ' + esc(doc.scope) + '</span></div>'
+    + '<section><h3>接口约定</h3><div class="api-doc-contract">' + esc(doc.contract) + '</div></section>'
+    + '<section><h3>请求参数</h3><table class="api-param-table"><thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead><tbody>' + rows + '</tbody></table></section>'
+    + '<section><h3>完整 cURL 示例</h3><pre class="api-doc-pre">' + esc(doc.curl()) + '</pre></section>'
+    + '<section><h3>请求实例</h3><pre class="api-doc-pre">' + esc(JSON.stringify(doc.request, null, 2)) + '</pre></section>'
+    + '<section><h3>响应示例</h3><pre class="api-doc-pre">' + esc(JSON.stringify(doc.response, null, 2)) + '</pre></section>';
+}
+
+function selectExternalApiDoc(id, button){
+  window.EXTERNAL_API_DOC_SELECTED = id;
+  document.querySelectorAll('#apiDocList .api-doc-item').forEach(function(item){ item.classList.toggle('active', item === button || item.getAttribute('data-doc') === id); });
+  renderExternalApiDoc(id);
+}
+
+function loadExternalApiPage(){
+  loadExternalApiKeys();
+  loadExternalApiRecords();
+  renderExternalApiDoc(window.EXTERNAL_API_DOC_SELECTED || 'authorize');
 }
 
 /* ---- 智能体一键配置模块 ----
@@ -24660,7 +25087,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
   'use strict';
 
   var NEXT = !!window.__NEXT_UI__;
-  var MORE_TABS = ['tasks', 'agents', 'media', 'settings', 'logs'];
+  var MORE_TABS = ['api', 'tasks', 'agents', 'media', 'settings', 'logs'];
 
   function nextCurrentTab(){
     var page = document.querySelector('.main-page.active');
@@ -24669,6 +25096,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     if(id === 'pageOverview') return 'overview';
     if(id === 'pageGateway') return 'gateway';
     if(id === 'pageAccounts') return 'accounts';
+    if(id === 'pageApi') return 'api';
     if(id === 'pageTasks') return 'tasks';
     if(id === 'pageAnalytics') return 'analytics';
     if(id === 'pageAgents') return 'agents';
@@ -24689,6 +25117,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     overview: { title: '总览', desc: '出口、账号健康和最近请求一屏看完。' },
     gateway: { title: '网关', desc: '模型目录、能力、思考档位与在售倍率。' },
     accounts: { title: '账号', desc: 'WorkBuddy 与 CodeArts 账号、积分和签到记录。' },
+    api: { title: '接口', desc: '管理外部 API Key、调用记录和账号接口文档。' },
     analytics: { title: '用量', desc: 'Token、请求、缓存、成本和剩余额度。' },
     tasks: { title: '自动化', desc: '后台调度器、一次性 / 活动福利和每日任务。' },
     agents: { title: '智能体', desc: '把本机 AI 客户端一键指向当前网关。' },
@@ -24725,7 +25154,7 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
     try {
       if(typeof _hiddenPages !== 'undefined' && Array.isArray(_hiddenPages)) hidden = _hiddenPages;
     } catch(e){}
-    var order = ['overview', 'gateway', 'accounts', 'analytics', 'tasks', 'agents', 'media', 'settings', 'logs'];
+    var order = ['overview', 'gateway', 'accounts', 'api', 'analytics', 'tasks', 'agents', 'media', 'settings', 'logs'];
     var firstVisible = '';
     order.forEach(function(key){
       var off = hidden.indexOf(key) >= 0;
