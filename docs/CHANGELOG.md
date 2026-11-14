@@ -1,3 +1,8 @@
+## Unreleased
+
+- **窄屏筛选条恢复横排**：`@media (max-width:700px)` 给 `.acct-filterbar` / `.recent-filterbar` 加了 `flex-direction:column`。筛选条从横排变纵排后，`.console-search` 的 `flex:1 1 220px` 里的 220px 从「宽度基准」变成「高度基准」：390px 视口下搜索框被撑成 314×220 的空白块，整条筛选条 461px 高，账号列表被顶出首屏。现在窄屏沿用面板原有口径——搜索框独占一行（`flex:1 1 100%` + 显式 `height:auto`），三个下拉每行两个（`flex:1 1 40%`，`min-width:120px` 兜底），不再使用 `flex-direction:column`。实测 390px（经典布局，Firefox）：搜索框 314×32，筛选条从 461px 收到 171px。新增 `tests/_test_filterbar_mobile_layout.js`（8 项）钉住断点内不得出现纵向堆叠。
+- **Restore the horizontal filter bar on narrow screens.** The 700px breakpoint stacked `.acct-filterbar` / `.recent-filterbar` with `flex-direction:column`, which turned the search box's `flex-basis` (220px) into a height: at a 390px viewport it rendered as a 314x220 blank block and the bar grew to 461px, pushing the account list off-screen. The search box now takes a full row (`flex:1 1 100%` plus an explicit `height:auto`) and the three selects share rows two-up (`flex:1 1 40%` with a `min-width:120px` floor); `flex-direction:column` is gone. New suite `tests/_test_filterbar_mobile_layout.js` (8 checks) pins the breakpoint against vertical stacking.
+
 ## v2.2.0
 
 - **合并上游 v2.0.4 – v2.1.3**（110 个文件，+15394 / -1612）：
