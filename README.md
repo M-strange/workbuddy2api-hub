@@ -245,6 +245,9 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 | 视频状态 | `GET` | `/v1/videos/<id>` | 轮询视频生成进度与结果 |
 | 产物下载 | `GET` | `/v1/videos/<id>/content` | 下载视频 MP4 产物直链 |
 | 健康检查 | `GET` | `/health` | 网关运行状态、可用账号数与就绪模型分布 |
+| 创建账号授权请求 | `POST` | `/v1/accounts/authorize` | 按 `realm=cn` 或 `intl` 生成一次性浏览器授权链接 |
+| 查询授权状态 | `GET` | `/v1/accounts/authorize/<request_id>` | 查询浏览器登录结果；成功后账号自动写入账号列表 |
+| 读取账号列表 | `GET` | `/v1/accounts?realm=cn\|intl` | 返回指定版本的脱敏账号列表 |
 
 ---
 
@@ -255,7 +258,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 314 个套件：234 个 Python + 80 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 317 个套件：236 个 Python + 81 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_mobile_check.py` 是独立的 Playwright 手机/桌面布局检查器（需自行安装 Playwright），按需手动运行，不在上面的套件集里。
 - `tests/_visual_recent.py` 是同一类手动检查器：用合成 fixture 起一份 1480 宽的「请求列表」，验证失败徽章点开的详情弹窗、四个过滤下拉真的把参数发到 `/usage/recent`，并把列表 / 弹窗 / 筛选条截图写到系统临时目录的 `wb-visual-recent/`。
 - CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12（3.9 是本项目声称的最低版本），Windows 上 python 3.12；推送 `v*` tag 时额外断言 **tag == 源码版本**（`-ci` 演练 tag 豁免）。
@@ -346,6 +349,12 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
 - **账号页移动端卡片分层**：第一行「勾选 + 昵称 + 版本 / 账户类型徽章」，第二行「号池 + 任务开关 + 备注 + 分组」chip 流；状态徽章与到期信息各归其行，长昵称按字符折行不超屏。启用 / 停用 / 删除三个按钮在手机上排成一行（各占 1/3），删除紧跟停用。批量操作组改成两列网格（6 个按钮 3 行 2 列），按钮文字不再被压成竖排。号池组（下拉 + 计数 + 两个「移入」）排成一行。 / **Mobile account card layering**: the first row is "checkbox + nickname + version / account-type badges" and the second row is a chip flow of "pool + task switch + note + group"; the state badge and expiry each get their own line, and long nicknames wrap by character instead of overflowing. Enable / Disable / Delete sit on one row on phones (one third each) with Delete right after Disable. The bulk-action group becomes a two-column grid (six buttons over three rows), so button labels are no longer squeezed into vertical text. The pool group (dropdown + counter + two "move" buttons) sits on a single row.
 - **启用 / 停用 / 删除 / 导出统一作用域**：四个「xx 已选」独立按钮移除，能力并进「启用 / 停用 / 删除 / 导出」——有勾选时以勾选为准，没有勾选时以当前筛选结果为准；勾选时按钮上标出数量（如「启用 (2)」），确认框写明本次范围。表头全选框改为作用于当前筛选结果（跨页），三态也按筛选结果回填。 / **One scope for enable / disable / delete / export**: the four "xx selected" buttons are gone and their behaviour folded into Enable / Disable / Delete / Export - checked accounts when anything is selected, otherwise the current filter result; the buttons show the count when a selection exists (e.g. "Enable (2)") and the confirmation dialog names the scope. The header select-all now applies to the whole filter result (across pages) and its tri-state is filled from that same set.
 - **表头文案缩短**：「今日活动」→「活动」、「总 token」→「Token」（全称保留在 `title` 里），省出的宽度给账号列。 / **Shorter header labels**: "Today's activity" -> "Activity" and "Total tokens" -> "Token" (the full wording stays in `title`), freeing width for the account column.
+
+### Unreleased
+
+- 新增独立「接口」模块，支持管理外部 API Key、查看调用记录（默认每页 20 条）和按接口查看动态请求示例。
+- 新增外部账号 API：生成浏览器授权链接、查询授权状态并读取国内版 / 国际版脱敏账号列表；API Key 统一管理，权限由接口 scope 控制。
+- 统一新工作台、兼容布局和移动端菜单顺序，接口入口紧跟在账号入口之后。
 
 ---
 

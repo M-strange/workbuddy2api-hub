@@ -33,7 +33,7 @@ function check(label, ok, detail) {
 /* ---- 1. 结构：每个一级页面按钮都必须是可被脚本寻址的 main-nav-btn ---- */
 
 const NAV_IDS = [
-  'btnNavGateway', 'btnNavAccounts', 'btnNavTasks',
+  'btnNavGateway', 'btnNavAccounts', 'btnNavApi', 'btnNavTasks',
   'btnNavMedia', 'btnNavAnalytics', 'btnNavLogs', 'btnNavSettings',
   'btnNavAgents', 'btnNavModels', 'btnNavRequests',
 ];

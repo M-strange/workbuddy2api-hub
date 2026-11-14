@@ -43,6 +43,10 @@ for (const [, name] of html.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(/g)) def
 for (const [, name] of html.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b|\()/g)) {
   defined.add(name);
 }
+// Arrow functions are also used for shared helpers.
+for (const [, name] of html.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:[A-Za-z_$][\w$]*|\([^)]*\))\s*=>/g)) {
+  defined.add(name);
+}
 // `window.name = function(...)` is the other way this page defines a handler;
 // the theme block's applyTheme / selectTheme / toggleThemeMenu all use it.
 // Whether such a name is actually reachable from an inline attribute is a

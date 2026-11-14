@@ -68,6 +68,7 @@ wb_client_geo.py
 wb_codearts.py
 wb_codearts_crypto.py
 wb_egress.py
+wb_external_api.py
 wb_fingerprint.py
 wb_identity.py
 wb_ipintel.py

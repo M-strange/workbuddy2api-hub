@@ -247,10 +247,12 @@ assert.ok(/main\{padding:20px var\(--page-pad\)/.test(html), 'main 应使用页�
 // issue #176 拆到了「账号」页，成长任务与日常福利则被上游搬到了「任务与福利」页
 // （所以这里的下界从上游的 4 跟着落到 2——仍然是「够撑起侧栏」，不是「只增不减」）。
 const regions = {};
-const pageMarkers = [...html.matchAll(/<div id="page(\w+)" class="main-page">/g)];
+const pageMarkers = [...html.matchAll(/<div id="page(\w+)" class="main-page(?:\s[^"]*)?">/g)];
 pageMarkers.forEach((m, i) => {
   const start = m.index;
-  const end = i + 1 < pageMarkers.length ? pageMarkers[i + 1].index : html.length;
+  const nextPage = i + 1 < pageMarkers.length ? pageMarkers[i + 1].index : html.length;
+  const firstScript = html.indexOf('<script', start);
+  const end = firstScript >= 0 && firstScript < nextPage ? firstScript : nextPage;
   regions[m[1].toLowerCase()] = (html.slice(start, end).match(/<section/g) || []).length;
 });
 assert.ok((regions.overview || 0) + (regions.gateway || 0) >= 2,

@@ -98,6 +98,7 @@ import wb_probes
 import wb_updates
 import wb_update_request
 import wb_time
+import wb_external_api
 IS_WINDOWS = os.name == "nt"
 
 
@@ -1396,6 +1397,7 @@ USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "reasoning_tokens",
 # restart forces browsers to log in again.
 PANEL = wb_settings.PanelSessions()
 API_KEY_FILE_SET = False
+EXTERNAL_AUTH_REQUESTS = wb_external_api.AuthorizationRequests()
 def configured_keys():
     """Panel-managed API keys, always read fresh so panel edits apply at once."""
     try:
@@ -23041,6 +23043,59 @@ class Handler(BaseHTTPRequestHandler):
             pass
         self._error(401, "invalid api key - " + hint, "invalid_request_error")
         return False
+
+    def _external_authorized(self, scope):
+        """Authenticate only against the separate external API key store."""
+        self.external_auth_status = 401
+        entry = wb_external_api.match_key(ACCOUNTS_DIR, self._supplied_key())
+        self.external_key_entry = entry
+        if entry is None:
+            self._error(401, "missing or invalid external API key",
+                        "authentication_error")
+            return False
+        if not wb_external_api.has_scope(entry, scope):
+            self.external_auth_status = 403
+            self._error(403, "external API key lacks scope %s" % scope,
+                        "insufficient_scope")
+            return False
+        return True
+
+    def _external_auth_failure_status(self):
+        return int(getattr(self, "external_auth_status", 401) or 401)
+
+    def _external_call_log(self, path, method, status, realm, started):
+        try:
+            logged_path = str(path or "")
+            if logged_path.startswith("/v1/accounts/authorize/"):
+                logged_path = "/v1/accounts/authorize/{request_id}"
+            logged_path = logged_path[:240]
+            wb_external_api.record_call(USAGE_DIR, {
+                "key_id": (getattr(self, "external_key_entry", None) or {}).get("id") or "",
+                "method": method,
+                "path": logged_path,
+                "realm": realm or "",
+                "status": int(status),
+                "elapsed_ms": int((time.time() - started) * 1000),
+            })
+        except Exception as exc:
+            log("external API call record failed: %s" % type(exc).__name__,
+                level="WARN", tag="api")
+
+    @staticmethod
+    def _external_realm(value):
+        realm = str(value or "").strip().lower()
+        return realm if realm in ("cn", "intl") else ""
+
+    def _external_error(self, path, method, realm, started, status, message, kind="invalid_request_error"):
+        self._external_call_log(path, method, status, realm, started)
+        return self._error(status, message, kind)
+
+    def _external_json(self, path, method, realm, started, status, payload):
+        self._external_call_log(path, method, status, realm, started)
+        return self._json(status, payload)
+
+    def _external_panel_required(self):
+        return self._panel_ok()
     # ---- web panel access ----
     def _panel_token(self):
         """Session token from the X-Panel-Token header.
@@ -23140,6 +23195,15 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+        if path == "/v1/accounts":
+            return self._get_external_accounts(query)
+        if path.startswith("/v1/accounts/authorize/"):
+            request_id = path[len("/v1/accounts/authorize/"):].strip("/")
+            return self._get_external_authorize_status(request_id)
+        if path == "/api/external/keys":
+            return self._get_external_keys()
+        if path == "/api/external/call-records":
+            return self._get_external_call_records(query)
         # 媒体任务/目录/产物与文本模型清单、文本统计各走各的入口。
         # 媒体入口上的 /v1/models 必须拒绝，否则客户端会以为这个实例也能对话；
         # 文本入口上的媒体查询同样拒绝，避免把「没有媒体号」误报成媒体功能坏了。
@@ -23673,6 +23737,197 @@ class Handler(BaseHTTPRequestHandler):
             name = "workbuddy-accounts-%s%s.json" % (label, stamp)
             return self._download(name, doc)
         return self._json(200, doc)
+
+    def _get_external_accounts(self, query):
+        started = time.time()
+        path = self.path.split("?")[0]
+        if not self._external_authorized("account:read"):
+            if self._external_auth_failure_status() != 401:
+                self._external_call_log(
+                    path, "GET", self._external_auth_failure_status(), "", started)
+            return
+        realm = self._external_realm((query.get("realm") or [""])[0])
+        if not realm:
+            return self._external_error(path, "GET", "", started, 400,
+                                        "realm must be cn or intl")
+        if POOL is None:
+            return self._external_error(path, "GET", realm, started, 503,
+                                        "account pool unavailable", "api_error")
+        try:
+            rows = [wb_external_api.sanitize_account(row)
+                    for row in account_views(realm=realm)]
+        except Exception as exc:
+            log("external API account list failed: %s" % str(exc)[:240],
+                level="WARN", tag="api")
+            return self._external_error(path, "GET", realm, started, 503,
+                                        "account list unavailable",
+                                        "api_error")
+        return self._external_json(path, "GET", realm, started, 200,
+                                   {"object": "list", "realm": realm,
+                                    "accounts": rows})
+
+    def _get_external_authorize_status(self, request_id):
+        started = time.time()
+        path = self.path.split("?")[0]
+        if not self._external_authorized("account:auth"):
+            if self._external_auth_failure_status() != 401:
+                self._external_call_log(
+                    path, "GET", self._external_auth_failure_status(), "", started)
+            return
+        key_id = (getattr(self, "external_key_entry", None) or {}).get("id") or ""
+        claimed = EXTERNAL_AUTH_REQUESTS.claim_poll(request_id, key_id)
+        if claimed is None:
+            return self._external_error(path, "GET", "", started, 404,
+                                        "unknown authorization request",
+                                        "not_found")
+        item, should_poll = claimed
+        realm = item.get("realm") or ""
+        result = item.get("result")
+        if should_poll:
+            if POOL is None:
+                EXTERNAL_AUTH_REQUESTS.release_poll(request_id, key_id)
+                return self._external_error(path, "GET", realm, started, 503,
+                                            "account pool unavailable", "api_error")
+            try:
+                result = POOL.poll_login(item.get("state"))
+            except Exception as exc:
+                log("external API authorization poll failed: %s" % str(exc)[:240],
+                    level="WARN", tag="api")
+                result = {"status": "error",
+                          "message": "could not query authorization status"}
+            status = str((result or {}).get("status") or "pending")
+            if status == "ok":
+                result = {
+                    "status": "ok",
+                    "account": wb_external_api.sanitize_account(
+                        (result or {}).get("account") or {}),
+                }
+                finished = EXTERNAL_AUTH_REQUESTS.finish(
+                    request_id, result, key_id)
+                if finished is not None:
+                    result = finished.get("result") or result
+            elif status in ("expired", "error", "unknown"):
+                result = {"status": status,
+                          "message": "authorization failed"}
+                finished = EXTERNAL_AUTH_REQUESTS.finish(
+                    request_id, result, key_id)
+                if finished is not None:
+                    result = finished.get("result") or result
+            else:
+                EXTERNAL_AUTH_REQUESTS.release_poll(request_id, key_id)
+                result = {"status": "pending",
+                          "message": "waiting for browser login"}
+        elif result is None:
+            # Another request owns the single upstream poll.  Return promptly
+            # instead of duplicating the login-state exchange.
+            result = {"status": "pending",
+                      "message": "authorization check in progress"}
+        payload = {"request_id": request_id, "realm": realm}
+        payload.update(result or {"status": "pending"})
+        return self._external_json(path, "GET", realm, started, 200, payload)
+
+    def _get_external_keys(self):
+        if not self._panel_ok():
+            return self._error(401, "panel password required", "invalid_request_error")
+        live = wb_external_api.list_keys(ACCOUNTS_DIR)
+        deleted = wb_external_api.list_keys(ACCOUNTS_DIR, include_deleted=True)
+        deleted = [row for row in deleted if row.get("deleted_at")]
+        return self._json(200, {
+            "keys": [wb_external_api.panel_key_view(row) for row in live],
+            "deleted_keys": [wb_external_api.panel_key_view(row) for row in deleted],
+            "scopes": list(wb_external_api.SUPPORTED_SCOPES),
+        })
+
+    def _get_external_call_records(self, query):
+        if not self._panel_ok():
+            return self._error(401, "panel password required", "invalid_request_error")
+        # 默认走服务端分页；只有明确传入旧的 limit 参数时才保留兼容形状。
+        if "page" in query or "page_size" in query or "limit" not in query:
+            try:
+                page = int((query.get("page") or ["1"])[0])
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                page_size = int((query.get("page_size") or ["20"])[0])
+            except (TypeError, ValueError):
+                page_size = 20
+            result = wb_external_api.recent_calls_page(
+                USAGE_DIR, page=page, page_size=page_size)
+        else:
+            # Keep the old limit-only read shape usable for older panel clients.
+            try:
+                limit = int((query.get("limit") or ["100"])[0])
+            except (TypeError, ValueError):
+                limit = 100
+            limit = max(1, min(wb_external_api.CALL_LOG_MAX_RECORDS, limit))
+            ordered = wb_external_api.recent_calls(
+                USAGE_DIR, limit=wb_external_api.CALL_LOG_MAX_RECORDS)
+            rows = ordered[:limit]
+            result = {
+                "records": rows,
+                "page": 1,
+                "page_size": limit,
+                "total": len(ordered),
+                "pages": 1,
+            }
+        rows = result["records"]
+        names = {row.get("id"): row.get("name") for row in
+                 wb_external_api.list_keys(ACCOUNTS_DIR, include_deleted=True)}
+        for row in rows:
+            row["key_name"] = names.get(row.get("key_id")) or "已删除 Key"
+        return self._json_panel(200, result)
+
+    def _handle_external_keys_post(self):
+        if not self._panel_ok():
+            return self._error(401, "panel password required", "invalid_request_error")
+        payload = self._payload_or_error()
+        if payload is None:
+            return
+        action = str(payload.get("action") or "create").strip().lower()
+        current = wb_external_api.list_keys(ACCOUNTS_DIR)
+        by_id = {row.get("id"): row for row in current}
+        if action == "create":
+            name = str(payload.get("name") or "").strip() or "未命名"
+            scopes = wb_external_api._clean_scopes(payload.get("scopes"))
+            if not scopes:
+                return self._error(400, "at least one supported scope is required",
+                                   "invalid_request_error")
+            secret = wb_external_api.new_key()
+            saved = wb_external_api.save_keys(
+                ACCOUNTS_DIR,
+                [{"name": name, "key": secret, "scopes": scopes, "enabled": True}],
+                delete_ids=[],
+            )
+            row = next((item for item in saved if item.get("key") == secret), None)
+            return self._json(200, {"key": secret,
+                                    "entry": wb_external_api.panel_key_view(row or {})})
+        wanted = str(payload.get("id") or "").strip()
+        old = by_id.get(wanted)
+        if old is None:
+            return self._error(404, "no such external API key", "not_found")
+        if action == "delete":
+            wb_external_api.save_keys(ACCOUNTS_DIR, [], delete_ids=[wanted])
+            return self._json(200, {"deleted": True, "id": wanted})
+        if action != "update":
+            return self._error(400, "unknown external API key action", "invalid_request_error")
+        updated = dict(old)
+        if "name" in payload:
+            updated["name"] = str(payload.get("name") or "").strip() or old.get("name")
+        if "scopes" in payload:
+            scopes = wb_external_api._clean_scopes(payload.get("scopes"))
+            if not scopes:
+                return self._error(400, "at least one supported scope is required",
+                                   "invalid_request_error")
+            updated["scopes"] = scopes
+        if "enabled" in payload:
+            updated["enabled"] = payload.get("enabled") is not False
+        saved = wb_external_api.save_keys(ACCOUNTS_DIR, [updated], delete_ids=[])
+        row = next((item for item in saved if item.get("id") == wanted), None)
+        if row is None:
+            # Deleting a key wins over an update built from a stale panel
+            # snapshot.  Never acknowledge a credential that no longer exists.
+            return self._error(404, "no such external API key", "not_found")
+        return self._json(200, {"entry": wb_external_api.panel_key_view(row)})
 
     def _get_accounts_login_poll(self, query):
         if not self._authorized():
@@ -28301,6 +28556,49 @@ class Handler(BaseHTTPRequestHandler):
         if not self._apply_pinned_route():
             return
         path = self.path.split("?")[0]
+        if path == "/v1/accounts/authorize":
+            started = time.time()
+            if not self._external_authorized("account:auth"):
+                if self._external_auth_failure_status() != 401:
+                    self._external_call_log(
+                        path, "POST", self._external_auth_failure_status(), "", started)
+                return
+            payload = self._payload_or_error()
+            if payload is None:
+                self._external_call_log(path, "POST", 400, "", started)
+                return
+            realm = self._external_realm(payload.get("realm"))
+            if not realm:
+                return self._external_error(path, "POST", "", started, 400,
+                                            "realm must be cn or intl")
+            if POOL is None:
+                return self._external_error(path, "POST", realm, started, 503,
+                                            "account pool unavailable", "api_error")
+            try:
+                started_login = POOL.start_login(
+                    realm=realm, platform="CLI", proxy_slot=None, taken_slots=())
+                auth_url = str(
+                    (started_login or {}).get("authUrl") or "").strip()
+                state = str((started_login or {}).get("state") or "").strip()
+                if not auth_url or not state:
+                    raise RuntimeError("authorization response is incomplete")
+                key_id = (getattr(self, "external_key_entry", None) or {}).get("id") or ""
+                request_id = EXTERNAL_AUTH_REQUESTS.create(
+                    realm, state, auth_url, key_id=key_id)
+            except Exception as exc:
+                log("external API authorization start failed: %s" % str(exc)[:240],
+                    level="WARN", tag="api")
+                return self._external_error(path, "POST", realm, started, 502,
+                                            "could not start authorization",
+                                            "api_error")
+            return self._external_json(path, "POST", realm, started, 200, {
+                "request_id": request_id,
+                "status": "pending",
+                "realm": realm,
+                "auth_url": auth_url,
+            })
+        if path == "/api/external/keys":
+            return self._handle_external_keys_post()
         # Arrival trace for the model routes only, before any body work: the
         # chat log line is written after the body is in hand, so a request whose
         # upload is slow (or that a CDN in front of us is still buffering) left
