@@ -1,3 +1,8 @@
+## Unreleased
+
+- **手机端抽屉遮罩恢复可点**：窄屏（`max-width:860px`）展开侧栏时，遮罩的显示规则写在 `html[data-ui="next"] .next-sidebar-backdrop` 上，而文件上方有一条 `#nextSidebarBackdrop{display:none}` 的 ID 规则。ID 选择器特异度更高，遮罩的 `display` 恒为 `none`，元素尺寸 0×0，`onclick="nextOpenSidebar(false)"` 收不到点击——抽屉展开后点右侧内容不会收起，点击直接穿透到页面。现在窄屏放开遮罩的两条规则都改用 ID 选择器（`#nextSidebarBackdrop`），与抽屉共用 `body.next-sidebar-open`。新增 `tests/_test_sidebar_backdrop.js`（11 项）钉住断点内必须用 ID 选择器。
+- **Restore the mobile drawer backdrop.** On narrow screens the backdrop's visible rule was written as `html[data-ui="next"] .next-sidebar-backdrop`, but the file also carries an earlier `#nextSidebarBackdrop{display:none}` ID rule. The ID selector wins on specificity, so the backdrop's `display` stayed `none`: 0x0 in size, its `onclick="nextOpenSidebar(false)"` never fired, and taps fell through to the page underneath. The two narrow-screen rules now target `#nextSidebarBackdrop` by ID and share `body.next-sidebar-open` with the drawer. New suite `tests/_test_sidebar_backdrop.js` (11 checks) pins the ID selector inside the breakpoint.
+
 ## v2.2.0
 
 - **合并上游 v2.0.4 – v2.1.3**（110 个文件，+15394 / -1612）：

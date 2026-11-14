@@ -5648,11 +5648,15 @@ html[data-ui="next"] .next-more-danger:hover{background:var(--bad-soft);color:va
     transform:translateX(-104%);transition:transform .22s ease;box-shadow:var(--shadow-md);
   }
   html[data-ui="next"] body.next-sidebar-open #nextSidebar{transform:translateX(0)}
-  html[data-ui="next"] .next-sidebar-backdrop{
+  /* 必须用 ID 选择器：文件上方有一条
+     `#nextSidebar, #nextTopbar, ..., #nextSidebarBackdrop{display:none}` 的 ID
+     规则，类选择器压不过它，遮罩会永远不显示（尺寸 0×0），于是点右侧内容时
+     点的是页面本身，抽屉不会收起。 */
+  html[data-ui="next"] #nextSidebarBackdrop{
     display:block;position:fixed;inset:0;z-index:35;background:var(--overlay-mask);
     opacity:0;pointer-events:none;transition:opacity .2s ease;
   }
-  html[data-ui="next"] body.next-sidebar-open .next-sidebar-backdrop{opacity:1;pointer-events:auto}
+  html[data-ui="next"] body.next-sidebar-open #nextSidebarBackdrop{opacity:1;pointer-events:auto}
   html[data-ui="next"] .next-menu-btn{display:inline-flex}
   html[data-ui="next"] #nextTopbar{height:60px;flex-basis:60px;padding:0 14px;gap:10px}
   html[data-ui="next"] #nextPageTitle{font-size:16px}
