@@ -45,6 +45,11 @@ on:
 
 permissions:
   contents: write
+  # The gate reads the tests workflow's runs and per-leg jobs through the
+  # Actions API. Listing any permission here sets every unlisted one to none,
+  # so without this the tag path dies with "Resource not accessible by
+  # integration (HTTP 403)" before it ever reaches the packaging jobs.
+  actions: read
 
 # A release must not be built twice at once, and an in-flight run is worth
 # finishing (it is about to upload assets), so unlike tests.yml this one does

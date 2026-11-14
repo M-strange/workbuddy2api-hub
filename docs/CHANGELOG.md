@@ -1,3 +1,8 @@
+## Unreleased
+
+- **发版工作流补 `actions: read`**：`release.yml` 的 `permissions` 只声明了 `contents: write`，GitHub 会把未列出的权限一律置为 `none`，于是 `required tests` 这道门禁在查询 Actions API（`/actions/workflows`、`/actions/runs/...`）时直接 403，tag 触发的发布永远走不到打包。补上 `actions: read`。
+- Add `actions: read` to the release workflow. Its `permissions` block only listed `contents: write`, and GitHub sets every unlisted scope to `none`, so the `required tests` gate hit HTTP 403 on the Actions API (`/actions/workflows`, `/actions/runs/...`) and a tag-triggered release never reached packaging.
+
 ## v2.2.0
 
 - **合并上游 v2.0.4 – v2.1.3**（110 个文件，+15394 / -1612）：
