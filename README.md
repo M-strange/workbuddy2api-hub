@@ -244,6 +244,9 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 | 生视频 | `POST` | `/v1/videos` | 异步生视频任务提交（本地并发排队与空闲调度） |
 | 视频状态 | `GET` | `/v1/videos/<id>` | 轮询视频生成进度与结果 |
 | 产物下载 | `GET` | `/v1/videos/<id>/content` | 下载视频 MP4 产物直链 |
+| 图片去水印 | `POST` | `/v1/images/strip-watermark` | 裁掉画面底部的水印留白（本地后处理，不扣积分；需在设置中启用） |
+| 文本嵌入 | `POST` | `/v1/embeddings` | OpenAI 兼容向量接口，上游模型 `bge-m3`（需在设置中启用） |
+| MCP 服务 | `POST` | `/mcp` | MCP 2025-06-18 无状态 JSON-RPC，把生图 / 生视频 / 去水印包成工具 |
 | 健康检查 | `GET` | `/health` | 网关运行状态、可用账号数与就绪模型分布 |
 
 ---
@@ -265,6 +268,12 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
 ## 七、版本更新记录 (Changelog)
 
 本版更新与完整历史版本请查阅 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
+### Unreleased
+
+- **MCP 服务端点**（`POST /mcp`，默认可用）：实现 MCP 2025-06-18 的无状态 JSON-RPC 子集（只回 `application/json`，不维护会话），把网关已有能力包成 6 个工具：`list_generation_models`、`generate_image`、`edit_image`、`generate_video`、`get_video_task`、`strip_watermark`（仅在去水印开关打开时出现）。工具调用不是另起一套逻辑，而是把参数当成 REST 请求体喂回既有 handler，所以选号、换号、计费与台账与直接调 REST 完全同一条路径。`GET /mcp` 返回 405 + `Allow: POST`。
+- **图片去水印裁切**（`POST /v1/images/strip-watermark`，开关 `watermark.enabled`，默认关）：从下往上逐行算亮度标准差，找出画面底部那条纯白留白的边界并裁掉。纯标准库实现，只收 PNG（其它格式回 415 并提示先转 PNG），不消耗上游积分（回执里 `usage.credit` 恒为 0）。留白不够高或不够白时回 422 并带上实测数字（留白像素数、占比、平均亮度），提示先用 `edit_image` 把底部约 1/3 涂成纯白再来裁。回读远端图片只放行上游产物域 `.myqcloud.com`，且不跟随重定向。
+- **文本嵌入接口**（`POST /v1/embeddings`，开关 `embeddings.enabled`，默认关）：OpenAI 兼容形状，转上游 `/v2/embeddings`，模型 `bge-m3`（1024 维，上游唯一实测可用的嵌入模型；嵌入模型与对话模型是两套注册表，`/v3/config` 里查不到）。响应会补齐 `object` / `index` 等 OpenAI 契约字段，条数不符直接报错而不是错位配对；`model_not_found` 与 `upstream_busy` 不换号不罚号。
+
 ### v2.2.0
 
 - **合并上游 v2.0.4 – v2.1.3**：Key 级日 token 限量与并发有界排队、请求列表服务端筛选与失败详情、CodeArts 积分差值结算与并发占位排队、工具 Schema 关键字类型纠偏、运营活动任务自动化（星巴克 / 记者节）、真实技能分享与模板真实场景、WB_MSGSTAT_SHARDS 单发亲和键等。

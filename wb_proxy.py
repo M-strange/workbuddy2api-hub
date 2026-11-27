@@ -84,6 +84,9 @@ import wb_media_tasks
 import wb_pool_media
 import wb_pool_scope
 import wb_pool_text
+import wb_embeddings
+import wb_mcp
+import wb_watermark
 import wb_pricing
 import wb_usage_io
 import wb_settings
@@ -331,6 +334,57 @@ MEDIA_POST_PATHS = (
     "/v1/images/edits", "/images/edits",
     "/v1/videos", "/videos",
 )
+
+#: 去水印路由。本地像素运算，不碰上游、不扣积分，所以**不受媒体总闸管**——它
+#: 有自己的开关（settings.watermark.enabled），因为两者的风险完全不同：生图是
+#: 花钱，去水印只是多一个能读 URL 的入口。
+WATERMARK_POST_PATHS = ("/v1/images/strip-watermark",)
+
+#: 嵌入路由。与 chat 同一个 API Key 门，同样不占 chat 并发槽（它是一次性的
+#: 短请求，排队只会让批量任务互相堵）。
+EMBEDDINGS_POST_PATHS = ("/v1/embeddings", "/embeddings")
+
+#: MCP 端点。单一路径，方法全在 JSON-RPC 的 method 字段里。
+MCP_PATH = "/mcp"
+
+#: MCP 的 initialize 会把这整段塞给客户端，所以它要能独立看懂：讲清能用什么、
+#: 哪一步要花钱、产物多久失效。写得像给同事留的便条，而不是 API 文档摘要。
+MCP_INSTRUCTIONS = """\
+本网关把 WorkBuddy 的生图 / 改图 / 生视频能力包装成 MCP 工具，鉴权与 REST 相同
+（Authorization: Bearer <网关 API Key>）。
+
+用法要点：
+1. 先用 list_generation_models 看当前区有哪些模型、各自约束与实测单价。
+2. generate_image / edit_image 是同步调用，一次约 5.7 积分/张，返回 COS 签名 URL
+   （约 24 小时失效），要长期保留请及时下载；需要二进制就传 response_format=b64_json。
+3. generate_video 默认阻塞到出片（可能几十秒到几分钟，一条 5 秒视频约 57~129 积分）。
+   想要异步就传 wait=false，再用 get_video_task 轮询。
+4. 模型名可以带 cn: / global: 前缀指定出口；不带则用面板配置的默认出口。
+5. strip_watermark 是**本地后处理**，不消耗上游积分，但要求画面底部本来就有一条
+   纯白留白（生图常见的水印区）。没有留白会回 422 并给出实测数字，这时先用
+   edit_image 把画面下方约 1/3 涂成纯白，再来裁。
+
+工具的业务失败以 isError: true 返回（HTTP 仍是 200），只有请求信封写坏才是
+JSON-RPC 错误。"""
+#: 生视频任务的终态。出现在这里的 status 意味着「不会再有变化了」，wait=true 的
+#: 阻塞轮询见到就收工。用集合而不是 `== "succeeded"`：失败与取消同样要立刻返回，
+#: 否则调用方会一直等到超时才发现任务早就死了。
+_MCP_TASK_FINAL_STATES = frozenset((
+    "succeeded", "success", "done", "completed", "finished",
+    "failed", "failure", "error", "canceled", "cancelled", "expired",
+))
+#: 去水印允许回读的域名后缀。**只放上游产物域**：这个端点的入参可以是一个 URL，
+#: 如果不收口，它就变成了一个「让网关替我请求任意地址并把响应体编码回来」的
+#: SSRF 探针。产物域是唯一的正当来源，其它来源请调用方自己转 data URL。
+WATERMARK_HOST_SUFFIXES = (".myqcloud.com",)
+#: 下载待裁图片的超时。产物图最大几十 MB，60 秒是「慢但不至于无限等」的折中。
+WATERMARK_FETCH_TIMEOUT = 60.0
+#: 嵌入请求最多换几个账号。与 chat 的重试量级一致：嵌入便宜，但换号要重发整批
+#: 输入，3 次已经足够覆盖「这个号刚好被限流」这种偶发。
+EMBEDDINGS_ROTATE_MAX = 3
+#: 去水印的请求体上限。入参是整张图的 base64，`wb_watermark.MAX_BYTES` 是 32 MB
+#: 原始字节、编码后约 43 MB，再包一层 JSON 信封，48 MB 才够用。
+WATERMARK_MAX_PAYLOAD_BYTES = 48 * 1024 * 1024
 #: 媒体请求体上限。改图的输入图是 data URL：8 MB 原图编码后约 10.7 MB，再包一层
 #: JSON 就逼近通用上限（默认 16 MB，还可能被 max_payload_mb 调小），而那条上限是
 #: 给 chat 定的。媒体单独放宽，且**只放宽不收紧**：用户配得更大就随他。
@@ -377,6 +431,57 @@ class MediaRateLimited(Exception):
 def _as_text(value):
     """非空字符串才算数（`None` / 空串 / 非字符串一律视为"没给"）。"""
     return value if isinstance(value, str) and value.strip() != "" else ""
+
+
+def _mcp_error_text(status, body):
+    """把网关的错误信封压成一句给模型看的话。
+
+    模型读不了 HTTP 状态码，它读的是工具返回的文本。所以这里把 `{"error":
+    {"message": ...}}` 拆出来，前面挂上状态码，剩下的字段（code / retry_after）
+    用紧凑 JSON 补在后面——足够让它判断「是该改参数还是该等一会儿」。
+    """
+    detail = ""
+    message = ""
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            message = _as_text(error.get("message"))
+            extra = {key: error[key] for key in ("code", "retry_after", "reset_at")
+                     if error.get(key) not in (None, "")}
+            if extra:
+                detail = json.dumps(extra, ensure_ascii=False)
+        elif isinstance(error, str):
+            message = error.strip()
+    if not message:
+        message = json.dumps(body, ensure_ascii=False)[:400] if body is not None else ""
+    parts = ["HTTP %d" % status]
+    if message:
+        parts.append(message)
+    if detail:
+        parts.append(detail)
+    return "：".join(parts)
+
+
+def _mcp_task_id(body):
+    """从任务回执里挖出任务 id。
+
+    上游历史上换过字段名（task_id / id / video_id），宽容一点比让调用方猜好：
+    这里只认这三个，且必须是**非空字符串**——返回整数 id 的旧接口并不存在，
+    而把 `True` 当成 id 只会在轮询时变成一个永远查不到的任务。
+    """
+    if not isinstance(body, dict):
+        return ""
+    for key in ("task_id", "id", "video_id"):
+        value = body.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    task = body.get("task")
+    if isinstance(task, dict):
+        for key in ("task_id", "id"):
+            value = task.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
 
 
 def acquire_media_slot():
@@ -576,6 +681,21 @@ def media_image_prices_path():
     return os.path.join(wb_media_tasks.default_out_dir(), "image-prices.json")
 
 
+def _ensure_prices_dir(path):
+    """落盘前先建目录。
+
+    为什么要有这一步：媒体目录是**第一次跑媒体时才创建**的，账本却可能比它先写
+    ——实测第一次生图时 `media/` 还不存在，`open()` 抛 FileNotFoundError 被
+    `except Exception: pass` 吞掉，内存里明明学到了 0.03，重启就退回 6.0 的估算值，
+    而且没有任何日志痕迹。宁可多一次 makedirs。
+    """
+    if not path:
+        return
+    folder = os.path.dirname(path)
+    if folder and not os.path.isdir(folder):
+        os.makedirs(folder, exist_ok=True)
+
+
 def learn_image_price(model, credit):
     """记下一次生图的实扣（积分/张）。没有 credit 就不记，绝不猜。"""
     model = (model or "").strip()
@@ -591,6 +711,7 @@ def learn_image_price(model, credit):
     with _MEDIA_PRICES_LOCK:
         _MEDIA_IMAGE_PRICES[model] = price
         try:
+            _ensure_prices_dir(_MEDIA_IMAGE_PRICES_PATH)
             with open(_MEDIA_IMAGE_PRICES_PATH, "w", encoding="utf-8") as handle:
                 json.dump(_MEDIA_IMAGE_PRICES, handle, ensure_ascii=False,
                           indent=2, sort_keys=True)
@@ -642,31 +763,33 @@ def load_media_prices():
             parts = (key or "").split("|")
             model = parts[0]
             resolution = parts[1] if len(parts) > 1 else ""
-            with_reference = len(parts) > 2 and parts[2] == "ref"
-            if len(parts) > 2 and parts[2] not in ("", "ref"):
+            tier = parts[2] if len(parts) > 2 else ""
+            if tier not in _PRICE_TIERS:
                 continue
             try:
                 price = float(value)
             except (TypeError, ValueError):
                 continue
             if model and price > 0:
-                _MEDIA_PRICES[(model, resolution, with_reference)] = price
+                _MEDIA_PRICES[(model, resolution, tier)] = price
 
 
 def _save_media_prices_locked():
     path = _MEDIA_PRICES_PATH
     if not path:
         return
-    payload = {("%s|%s" % (model, resolution)) + ("|ref" if ref else ""): price
-               for (model, resolution, ref), price in _MEDIA_PRICES.items()}
+    payload = {("%s|%s|%s" % (model, resolution, tier)).rstrip("|"): price
+               for (model, resolution, tier), price in _MEDIA_PRICES.items()}
     try:
+        _ensure_prices_dir(path)
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
     except Exception:                                    # noqa: BLE001
         pass                                             # 落盘失败不影响派发
 
 
-def learn_media_price(model, resolution, credit, seconds, with_reference=False):
+def learn_media_price(model, resolution, credit, seconds, with_reference=False,
+                      audio=True):
     """用一次已完成任务的实扣反推单价。
 
     三个输入缺一不可：`credit` 为空说明上游没给结算值（failed / lost），
@@ -677,6 +800,11 @@ def learn_media_price(model, resolution, credit, seconds, with_reference=False):
     3 张参考图 + 1 段参考视频、5 秒 768P 实扣 142.86 = 28.572/秒，正好是普通
     768P 14.2857/秒 的 2.00 倍）。两档共用同一个键会互相覆盖——那次实测就把
     768P 的普通单价写成了 28.572，之后所有普通任务报价都会翻倍。
+
+    `audio` 同样单独一档：**关掉声音是另一个价**（2026-11-04 实测 kling-video-v3
+    720P 3 秒：有声 32.37 = 10.79/秒，静音 21.58 = 7.1933/秒，正好 2/3）。同样的
+    覆盖事故已经发生过一次：一条静音任务把 720P 的普通价改成了 7.1933，之后所有
+    默认（有声）任务都被低估 33%。
     """
     model = (model or "").strip()
     if not model:
@@ -690,23 +818,35 @@ def learn_media_price(model, resolution, credit, seconds, with_reference=False):
         return None
     price = round(credit / span, 4)
     with _MEDIA_PRICES_LOCK:
-        _MEDIA_PRICES[_price_key(model, resolution, with_reference)] = price
+        _MEDIA_PRICES[_price_key(model, resolution, with_reference, audio)] = price
         _save_media_prices_locked()
     return price
 
 
-def _price_key(model, resolution, with_reference=False):
-    """账本键：(模型, 分辨率, 是否带参考素材)。"""
-    return ((model or "").strip(), (resolution or "").strip(),
-            bool(with_reference))
+#: 账本第三段（档位）允许的取值：普通 / 带参考素材 / 静音 / 静音+参考素材。
+_PRICE_TIERS = ("", "ref", "mute", "refmute")
+
+
+def _price_key(model, resolution, with_reference=False, audio=True):
+    """账本键：(模型, 分辨率, 档位)。
+
+    档位把「带参考素材」（实测 2 倍）与「静音」（实测 2/3）都编进键里——它们都是
+    真实存在的价差，共用一个键就等于让后一次实测悄悄改掉前一次的报价。
+    """
+    tier = ""
+    if with_reference:
+        tier += "ref"
+    if not audio:
+        tier += "mute"
+    return ((model or "").strip(), (resolution or "").strip(), tier)
 
 
 def media_price_per_second(model, resolution=None, exact_only=False,
-                          with_reference=False):
+                          with_reference=False, audio=True):
     """实测单价（上游 credit ÷ 秒数）；没有观测值返回 None。
 
-    精确匹配 `(模型, 分辨率)` 优先；只有别的分辨率的观测值时取该模型**最大值**
-    ——估算宁可往高报：高估只是可能少派一次，低估会把账号打穿。
+    精确匹配 `(模型, 分辨率, 档位)` 优先；只有别的分辨率的观测值时取该模型**同一档**
+    的**最大值**——估算宁可往高报：高估只是可能少派一次，低估会把账号打穿。
 
     `exact_only=True` 关掉那个"取最大值"的兜底：**报价**必须诚实，把 4K 的价
     填给没观测过的 1080P 就是错报（实测 minimax 2K 比 768P 贵 60%，两者价差
@@ -715,17 +855,18 @@ def media_price_per_second(model, resolution=None, exact_only=False,
     model = (model or "").strip()
     if not model:
         return None
-    tier = bool(with_reference)
+    tier = _price_key(model, resolution, with_reference, audio)[2]
     with _MEDIA_PRICES_LOCK:
-        exact = _MEDIA_PRICES.get(_price_key(model, resolution, tier))
+        exact = _MEDIA_PRICES.get((model, (resolution or "").strip(), tier))
         if exact:
             return exact
         if exact_only:
             return None
         # 兜底只在**同一档**里取最大值：拿"带参考素材"的 2 倍价去估普通任务，
-        # 会把预算算成两倍，害得本来付得起的单子被拦下。
-        same_model = [price for (name, _res, ref), price in _MEDIA_PRICES.items()
-                      if name == model and ref == tier]
+        # 会把预算算成两倍，害得本来付得起的单子被拦下；拿静音的 2/3 价去估
+        # 有声任务则会低估，反向打穿账号。
+        same_model = [price for (name, _res, name_tier), price in _MEDIA_PRICES.items()
+                      if name == model and name_tier == tier]
     return max(same_model) if same_model else None
 
 
@@ -755,9 +896,12 @@ def backfill_media_prices():
         # 改成了 28.572，之后每次重启回填都会再写坏一遍。宁可少学一条。
         if "has_reference_materials" not in task:
             continue
+        # `enable_audio` 老任务里也没有；缺省按有声（上游默认开声），不要反过来
+        # 把静音价当成普通价回填。
         if learn_media_price(task.get("model"), task.get("resolution"),
                              task.get("credit"), task.get("seconds"),
-                             with_reference=bool(task.get("has_reference_materials"))) is not None:
+                             with_reference=bool(task.get("has_reference_materials")),
+                             audio=task.get("enable_audio", True) is not False) is not None:
             learned += 1
     # 生图没有任务表（同步调用），实扣只落在 usage.jsonl 里，也从那儿回填。
     try:
@@ -780,16 +924,18 @@ def backfill_media_prices():
     return learned
 
 
-def media_cost_hint(model, seconds, resolution=None, with_reference=False):
+def media_cost_hint(model, seconds, resolution=None, with_reference=False,
+                    audio=True):
     """派发前的积分估计：有实测价按实测算，没有才退回 26/秒的上界。
 
     `with_reference` 要如实传：带参考素材是另一档价（实测 2 倍），拿普通档估它
-    会低估一半，等于把"付不起"的单子放过去。
+    会低估一半，等于把"付不起"的单子放过去。`audio` 同理（实测静音只要 2/3）。
     """
     return wb_media.estimate_cost(
         "video", seconds,
         price_per_second=media_price_per_second(model, resolution,
-                                                with_reference=with_reference))
+                                                with_reference=with_reference,
+                                                audio=audio))
 
 
 def media_task_finished(task):
@@ -806,13 +952,16 @@ def media_task_finished(task):
         return
     media_key_spend_add(task.get("key"), credit)
     # 用实扣反推单价，下次估算就不必再用一刀切的 26/秒。
+    muted = task.get("enable_audio") is False
     learned = learn_media_price(task.get("model"), task.get("resolution"),
                                 credit, task.get("seconds"),
-                                with_reference=bool(task.get("has_reference_materials")))
+                                with_reference=bool(task.get("has_reference_materials")),
+                                audio=not muted)
     if learned is not None:
-        log("media: 学到 %s（%s%s）单价 %.4f 积分/秒（实扣 %.2f ÷ %s 秒）"
+        log("media: 学到 %s（%s%s%s）单价 %.4f 积分/秒（实扣 %.2f ÷ %s 秒）"
             % (task.get("model"), task.get("resolution") or "默认",
-               "·带参考素材" if task.get("has_reference_materials") else "", learned,
+               "·带参考素材" if task.get("has_reference_materials") else "",
+               "·静音" if muted else "", learned,
                float(credit), task.get("seconds")), tag="media")
     record_usage(task.get("model") or "video", {"credit": credit}, stream=False,
                  account=task.get("account"), outcome="completed",
@@ -822,6 +971,7 @@ def media_task_finished(task):
                  media={"seconds": task.get("seconds"),
                         "resolution": task.get("resolution"),
                         "aspect_ratio": task.get("aspect_ratio"),
+                        "enable_audio": task.get("enable_audio"),
                         "image_to_video": task.get("image_to_video")})
 
 
@@ -1027,9 +1177,11 @@ def submit_queued_video_task(task):
 
     def pick(avoid):
         try:
-            cost_hint = media_cost_hint(task.get("model"),
-                                        task.get("seconds") or 5,
-                                        task.get("resolution"))
+            cost_hint = media_cost_hint(
+                task.get("model"), task.get("seconds") or 5,
+                task.get("resolution"),
+                with_reference=bool(task.get("has_reference_materials")),
+                audio=task.get("enable_audio") is not False)
         except Exception:
             cost_hint = 0
         return _pick_media_account_for(realm, model_id, cost_hint, avoid)
@@ -12522,6 +12674,13 @@ def runtime_settings_view():
         "media_limits": dict(wb_settings.MEDIA_LIMITS),
         "media_minimums": dict(wb_settings.MEDIA_MINIMUMS),
         "media_realms": list(wb_settings.MEDIA_REALMS),
+        # 去水印与嵌入。同样默认关；读回去面板才知道开关该画在哪一格。
+        "watermark": wb_settings.watermark_config(ACCOUNTS_DIR),
+        "watermark_minimums": dict(wb_settings.WATERMARK_MINIMUMS),
+        "watermark_limits": dict(wb_settings.WATERMARK_LIMITS),
+        "embeddings": wb_settings.embeddings_config(ACCOUNTS_DIR),
+        "embeddings_minimums": dict(wb_settings.EMBEDDINGS_MINIMUMS),
+        "embeddings_limits": dict(wb_settings.EMBEDDINGS_LIMITS),
         "log_db_enabled": wb_settings.log_db_enabled(ACCOUNTS_DIR),
         "stats_tz_beijing": wb_settings.stats_tz_beijing(ACCOUNTS_DIR),
         "log_db_max_rows": wb_settings.log_db_max_rows(ACCOUNTS_DIR),
@@ -22353,6 +22512,14 @@ class Handler(BaseHTTPRequestHandler):
     # 与 _json_etag 同一个理由放成实例属性：测试里三十来个 Handler 桩只覆写
     # 了 _json(code, obj)，加参数会让它们全部报错，而属性对它们完全无感。
     _json_extra_headers = None
+    # 响应捕获槽。非 None 时 _json()/_error()/_rate_limited() 不再写 socket，
+    # 而是把 (status, body) 存进这个元组。MCP 的 tools/call 靠它把工具参数当
+    # 请求体喂给既有的 REST 处理路径（见 _capture_call），从而与 REST 共用同一条
+    # 选号 / 换号 / 计费 / 台账逻辑——两套实现迟早会出现两套账。
+    #
+    # 放成类属性而不是在 __init__ 里设：Handler 没有 __init__（BaseHTTPRequestHandler
+    # 的构造签名只接受连接参数），而测试里的 Handler 桩大量直接调 _json()。
+    _capture = None
     # The stdlib default caps the request line at 64KB and answers an opaque
     # bare "414 Request-URI Too Long" for anything longer. Raise it and reply in
     # the normal JSON error shape so an over-long URL is diagnosable.
@@ -22443,6 +22610,10 @@ class Handler(BaseHTTPRequestHandler):
         # 每条 access 日志都带来源 IP：排查"谁在刷接口"时不必再去反查时间戳。
         log("%s %s" % (getattr(self, "client_ip", "") or "-", fmt % args))
     def _json(self, code, obj):
+        if getattr(self, "_capture", None) is not None:
+            # 内部复用（MCP tools/call）：把响应收进槽里，一个字节都不发。
+            self._capture = (code, obj)
+            return
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -22754,6 +22925,12 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
     def _error(self, code, message, err_type="server_error", reset_at=None):
+        if getattr(self, "_capture", None) is not None:
+            # 内部复用（MCP tools/call）：body 早被外层读走了，这里绝不能走到下面
+            # 的 _discard_body()（它会等一份永远不来的数据），只把错误形状收进槽里。
+            self._capture = (code, {"error": {
+                "message": message, "type": err_type, "code": code}})
+            return
         # Every early rejection funnels through here, so draining the body in
         # one place covers all of them. Unblock any client still waiting on
         # "Expect: 100-continue" first, otherwise it never sends the body and
@@ -22811,6 +22988,18 @@ class Handler(BaseHTTPRequestHandler):
         if exc.detail and not custom:
             detail = " - " + exc.detail[:200]
         reset_at = rate_limit_reset_at(exc)
+        if getattr(self, "_capture", None) is not None:
+            # 内部复用（MCP tools/call）：同 _error，跳过 body 排空，只收形状。
+            error = {
+                "message": text + detail + rate_limit_reset_note(reset_at),
+                "type": "rate_limit_error",
+                "code": 429,
+                "retry_after": wait,
+            }
+            if reset_at:
+                error["reset_at"] = int(reset_at)
+            self._capture = (429, {"error": error})
+            return
         # 429 can be answered before the body is read (the model cooldown is
         # checked on the way in), so drain it exactly like _error does.
         self._handle_expect_continue()
@@ -23176,6 +23365,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_codearts_oauth_callback(query)
         if self._is_panel_route(path) and not self._panel_ok():
             return self._error(401, "panel password required", "invalid_request_error")
+        if path == MCP_PATH:
+            # MCP 是无状态单发请求，GET 没有意义。明确回 405 + Allow，而不是
+            # 让它掉进 404：客户端据此能分清「端点存在但方法不对」和「路径写错了」。
+            self.send_response(405)
+            self.send_header("Allow", "POST")
+            self.send_header("Content-Length", "0")
+            if cors_origin_allowed(path):
+                self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            return
         if path in ("/", "/dashboard", "/ui"):
             return self._get_dashboard()
         if path == "/panel/status":
@@ -24168,17 +24367,506 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._error(400, "invalid JSON body", "invalid_request_error")
             return None
+    # ------------------------------------------------------------ MCP（JSON-RPC 工具面）
+
+    def _empty_response(self, code):
+        """回一个没有 body 的响应。MCP 的 202（通知已收到）走这里。"""
+        self.send_response(code)
+        self.send_header("Content-Length", "0")
+        if cors_origin_allowed(getattr(self, "path", "") or ""):
+            self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        try:
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
+
+    def _capture_call(self, fn, *args):
+        """跑一段既有的 REST 处理路径，把它写出的响应截获成 `(status, body)`。
+
+        MCP 的工具参数在这里被当成 REST 请求体喂进去，于是选号、换号、计费、
+        台账全部复用同一份代码——两套实现迟早会算出两套账。代价是绕过 HTTP 层，
+        所以 MCP 发起的调用不会在**请求台账**里单独占一行（媒体自己的记账照旧）。
+        """
+        saved = self._capture
+        self._capture = (None, None)
+        try:
+            fn(*args)
+        finally:
+            captured = self._capture
+            self._capture = saved
+        status, body = captured if isinstance(captured, tuple) else (None, None)
+        if status is None:
+            # 处理路径既没写响应也没报错：这属于代码缺陷，但不能让整个 MCP 端点
+            # 跟着崩，回一个可诊断的 502 让调用方看到是哪一步没说话。
+            return 502, {"error": {"message": "内部调用没有产生响应",
+                                   "type": "server_error", "code": 502}}
+        return status, body
+
+    def _handle_mcp(self):
+        """`POST /mcp`：JSON-RPC 2.0 单发请求。协议细节全在 wb_mcp 里。"""
+        try:
+            payload = self._read_payload(
+                max_bytes=wb_mcp.MAX_BODY_BYTES, allow_list=False)
+        except BodyTooLarge as exc:
+            self._reject_body_after_reply = True
+            self._json(200, wb_mcp.parse_error(
+                "body too large (%d bytes > %d)" % (exc.length, wb_mcp.MAX_BODY_BYTES)))
+            self._drain_rejected_body(exc.length)
+            self.close_connection = True
+            return
+        except BadJSON:
+            # 解析失败也必须是 JSON-RPC 的 -32700，而不是网关惯用的 400 信封：
+            # MCP 客户端按协议解析错误，给它 OpenAI 形状等于没回。
+            self._json(200, wb_mcp.parse_error())
+            return
+        status, body = wb_mcp.dispatch(
+            payload, self._mcp_tools, self._mcp_call_tool,
+            instructions=MCP_INSTRUCTIONS,
+            version=self.server_version.split("/", 1)[-1])
+        if body is None:
+            self._empty_response(status)
+            return
+        self._json(status, body)
+
+    def _mcp_tools(self):
+        """当前可用的工具清单。去水印关着就**不出现**，而不是出现后报错。"""
+        tools = [
+            {
+                "name": "list_generation_models",
+                "description": "列出当前出口可用的生图 / 生视频模型，含各自约束与实测单价。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["image", "video"],
+                            "description": "image=生图/改图模型，video=生视频模型（默认 image）",
+                        },
+                        "realm": {
+                            "type": "string",
+                            "enum": ["cn", "intl"],
+                            "description": "出口；不给则用面板配置的默认出口",
+                        },
+                    },
+                },
+            },
+            {
+                "name": "generate_image",
+                "description": "文生图，同步返回 COS 签名 URL（约 24 小时失效）。一次约 5.7 积分。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string", "description": "画面描述（必填）"},
+                        "model": {"type": "string", "description": "模型 id；不给则用该区默认模型"},
+                        "size": {"type": "string", "description": "如 1024x1024"},
+                        "quality": {"type": "string", "description": "质量档位，透传上游"},
+                        "n": {"type": "integer", "description": "生成几张（默认 1）"},
+                        "response_format": {
+                            "type": "string", "enum": ["url", "b64_json"],
+                            "description": "url（默认）或 b64_json；后者网关自己下载再编码",
+                        },
+                    },
+                    "required": ["prompt"],
+                },
+            },
+            {
+                "name": "edit_image",
+                "description": "改图 / 图生图，同步返回 COS 签名 URL。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string", "description": "改动要求（必填）"},
+                        "image": {
+                            "description": "输入图：data URL、公网 http(s) URL，或字符串数组",
+                            "oneOf": [
+                                {"type": "string"},
+                                {"type": "array", "items": {"type": "string"}},
+                            ],
+                        },
+                        "model": {"type": "string"},
+                        "size": {"type": "string"},
+                        "quality": {"type": "string"},
+                        "n": {"type": "integer"},
+                        "response_format": {"type": "string", "enum": ["url", "b64_json"]},
+                    },
+                    "required": ["prompt", "image"],
+                },
+            },
+            {
+                "name": "generate_video",
+                "description": "生视频。默认立即返回任务（202 + id），wait=true 则阻塞到出片。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string", "description": "画面描述（必填）"},
+                        "image": {"type": "string", "description": "首帧：data URL 或公网 http(s) URL"},
+                        "model": {"type": "string"},
+                        "seconds": {"type": "integer", "description": "时长（秒），受模型与面板上限约束"},
+                        "resolution": {"type": "string", "description": "如 720p"},
+                        "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1"]},
+                        "negative_prompt": {"type": "string"},
+                        "enable_audio": {"type": "boolean"},
+                        "watermark": {"type": "boolean"},
+                        "reference_images": {
+                            "type": "array", "items": {"type": "string"},
+                            "description": "参考图数组（data URL 或公网 URL）",
+                        },
+                        "wait": {
+                            "type": "boolean",
+                            "description": "true = 阻塞到任务结束（默认 false，立刻返回任务）",
+                        },
+                        "timeout_seconds": {
+                            "type": "number",
+                            "description": "wait=true 时的等待上限，默认 300，最大 900",
+                        },
+                    },
+                    "required": ["prompt"],
+                },
+            },
+            {
+                "name": "get_video_task",
+                "description": "查生视频任务的状态与产物地址。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "任务 id（必填）"},
+                    },
+                    "required": ["task_id"],
+                },
+            },
+        ]
+        try:
+            watermark_on = bool(wb_settings.watermark_config(ACCOUNTS_DIR)["enabled"])
+        except Exception:
+            watermark_on = False
+        if watermark_on:
+            tools.append({
+                "name": "strip_watermark",
+                "description": ("裁掉图片底部的纯白留白（生图水印区）。本地后处理，"
+                                "不消耗上游积分。"),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "image": {"type": "string",
+                                  "description": "data URL、上游产物域 URL，或裸 base64"},
+                        "min_blank_px": {"type": "integer",
+                                         "description": "留白至少多少像素才算可裁（默认 90）"},
+                        "keep_blank": {"type": "integer",
+                                       "description": "裁切后额外保留多少行留白（默认 0）"},
+                        "format": {"type": "string", "enum": ["png", "jpeg"],
+                                   "description": "输出格式；不给则跟随输入"},
+                        "quality": {"type": "integer", "description": "JPEG 质量 1-100（默认 92）"},
+                    },
+                    "required": ["image"],
+                },
+            })
+        return tools
+
+    def _mcp_call_tool(self, name, arguments):
+        """执行一个工具。业务失败抛 ToolError（→ isError:true），不是 RPC 错误。"""
+        handlers = {
+            "list_generation_models": self._mcp_list_models,
+            "generate_image": self._mcp_generate_image,
+            "edit_image": self._mcp_edit_image,
+            "generate_video": self._mcp_generate_video,
+            "get_video_task": self._mcp_get_video_task,
+            "strip_watermark": self._mcp_strip_watermark,
+        }
+        handler = handlers.get(name)
+        if handler is None:
+            raise wb_mcp.ToolError("没有这个工具：%s" % name)
+        status, body = handler(arguments)
+        if status >= 400:
+            raise wb_mcp.ToolError(_mcp_error_text(status, body))
+        return body
+
+    def _mcp_list_models(self, arguments):
+        kind = arguments.get("kind") or "image"
+        if kind not in ("image", "video"):
+            raise wb_mcp.ToolError("kind 只能是 image 或 video")
+        tag = (wb_media.TAG_TEXT_TO_VIDEO if kind == "video"
+               else wb_media.TAG_TEXT_TO_IMAGE)
+        query = {"tag": [tag]}
+        realm = arguments.get("realm")
+        if isinstance(realm, str) and realm.strip():
+            query["realm"] = [realm.strip()]
+        return self._capture_call(self._get_media_models, query)
+
+    def _mcp_image_payload(self, arguments, edit):
+        prompt = arguments.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise wb_mcp.ToolError("prompt 必填，且必须是非空字符串")
+        payload = {"prompt": prompt}
+        for key in ("model", "size", "quality", "response_format"):
+            value = arguments.get(key)
+            if value is not None:
+                payload[key] = value
+        if arguments.get("n") is not None:
+            payload["n"] = arguments["n"]
+        if edit:
+            image = arguments.get("image")
+            if image is None or image == "" or image == []:
+                raise wb_mcp.ToolError("image 必填（改图要带输入图）")
+            payload["image"] = image
+        return payload
+
+    def _mcp_generate_image(self, arguments):
+        payload = self._mcp_image_payload(arguments, edit=False)
+        return self._capture_call(
+            self._handle_media_post, "/v1/images/generations", payload)
+
+    def _mcp_edit_image(self, arguments):
+        payload = self._mcp_image_payload(arguments, edit=True)
+        return self._capture_call(
+            self._handle_media_post, "/v1/images/edits", payload)
+
+    def _mcp_generate_video(self, arguments):
+        prompt = arguments.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise wb_mcp.ToolError("prompt 必填，且必须是非空字符串")
+        payload = {"prompt": prompt}
+        for key in ("image", "model", "seconds", "resolution", "aspect_ratio",
+                    "negative_prompt", "enable_audio", "watermark",
+                    "reference_images"):
+            value = arguments.get(key)
+            if value is not None:
+                payload[key] = value
+        status, body = self._capture_call(
+            self._handle_media_post, "/v1/videos", payload)
+        if status >= 400 or arguments.get("wait") is not True:
+            return status, body
+        task_id = _mcp_task_id(body)
+        if not task_id:
+            return status, body
+        try:
+            timeout = float(arguments.get("timeout_seconds"))
+        except (TypeError, ValueError):
+            timeout = 300.0
+        timeout = max(5.0, min(timeout, 900.0))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            task = media_tasks().get(task_id)
+            if not self._media_task_visible(task):
+                return status, body
+            public = self._media_task_public(task)
+            if str(public.get("status") or "") in _MCP_TASK_FINAL_STATES:
+                return 200, public
+            time.sleep(2.0)
+        task = media_tasks().get(task_id)
+        public = self._media_task_public(task) if task else dict(body)
+        public["hint"] = ("等待 %d 秒仍未出片，任务仍在后台跑；"
+                          "用 get_video_task 继续查 %s" % (int(timeout), task_id))
+        return 200, public
+
+    def _mcp_get_video_task(self, arguments):
+        task_id = arguments.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            task_id = _mcp_task_id(arguments)
+        if not task_id:
+            raise wb_mcp.ToolError("task_id 必填")
+        return self._capture_call(
+            self._get_media_video, "/v1/videos/%s" % task_id.strip(), {})
+
+    def _mcp_strip_watermark(self, arguments):
+        return self._capture_call(self._handle_watermark_post, dict(arguments))
+
+    # ------------------------------------------------------------ 去水印（本地后处理）
+
+    def _handle_watermark_post(self, payload):
+        """`POST /v1/images/strip-watermark`：裁掉底部纯白留白。
+
+        开关关着回 **403 而不是 404**：这条路径的存在本身不是秘密（README 里写着），
+        回 403 能让调用方一眼看出「功能在，只是没开」，比一个让人怀疑拼错路径的
+        404 有用。
+        """
+        config = wb_settings.watermark_config(ACCOUNTS_DIR)
+        if not config["enabled"]:
+            return self._error(
+                403, "watermark strip is disabled (settings.watermark.enabled = false)",
+                "invalid_request_error")
+        raw = payload.get("image")
+        try:
+            kind, value = wb_watermark.classify_input(raw)
+            if kind == "url":
+                data = self._watermark_fetch(value)
+            elif kind == "data":
+                try:
+                    data = base64.b64decode(value, validate=True)
+                except Exception:
+                    raise wb_watermark.NotImageError("data URL 的 base64 解不开")
+            else:
+                try:
+                    data = base64.b64decode(value, validate=True)
+                except Exception:
+                    raise wb_watermark.NotImageError("image 既不是 URL 也不是合法 base64")
+            if len(data) > wb_watermark.MAX_BYTES:
+                raise wb_watermark.TooLargeError(
+                    "图片超过 %d 字节上限" % wb_watermark.MAX_BYTES)
+            result, output = wb_watermark.strip(
+                data,
+                min_blank_px=payload.get("min_blank_px"),
+                keep_blank=payload.get("keep_blank"),
+                fmt=payload.get("format") or "",
+                quality=payload.get("quality"),
+                white_lum=config["white_lum"])
+        except wb_watermark.StripError as exc:
+            body = dict(exc.result or {})
+            body["error"] = {"message": exc.message, "type": "invalid_request_error",
+                             "code": exc.code}
+            return self._json(exc.status, body)
+        if _as_text(payload.get("return")) == "meta":
+            return self._json(200, result)
+        body = dict(result)
+        mime = "image/png" if result["format"] == "png" else "image/jpeg"
+        body["data_url"] = "data:%s;base64,%s" % (
+            mime, base64.b64encode(output).decode("ascii"))
+        return self._json(200, body)
+
+    def _watermark_fetch(self, url):
+        """取 URL 上的图。**只允许上游产物域，且不跟随重定向。**
+
+        跟随一次 302 就能把请求带去任意地址，所以这里连 3xx 都不接受：产物域本来
+        就不做重定向。其它来源请调用方自己转成 data URL / base64 再传——那也顺便
+        让「这张图是从哪来的」变成调用方的显式决定，而不是网关替他决定。
+        """
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise wb_watermark.NotImageError("image 的 URL 只接受 http(s)")
+        host = (parsed.hostname or "").lower()
+        if not any(host == suffix.lstrip(".") or host.endswith(suffix)
+                   for suffix in WATERMARK_HOST_SUFFIXES):
+            raise wb_watermark.NotImageError(
+                "image 的 URL 只允许上游产物域（%s）；其它来源请传 data URL 或 base64"
+                % ", ".join(WATERMARK_HOST_SUFFIXES))
+
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = urllib.request.build_opener(_NoRedirect())
+        request = urllib.request.Request(url, method="GET")
+        try:
+            resp = opener.open(request, timeout=WATERMARK_FETCH_TIMEOUT)
+        except urllib.error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                raise wb_watermark.NotImageError(
+                    "产物地址回了 %d 重定向，本端点不跟随" % exc.code)
+            raise wb_watermark.NotImageError("下载 image 失败：HTTP %d" % exc.code)
+        except Exception as exc:
+            raise wb_watermark.NotImageError("下载 image 失败：%s" % exc)
+        try:
+            data = resp.read(wb_watermark.MAX_BYTES + 1)
+        except Exception as exc:
+            raise wb_watermark.NotImageError("读取 image 失败：%s" % exc)
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+        if len(data) > wb_watermark.MAX_BYTES:
+            raise wb_watermark.TooLargeError(
+                "图片超过 %d 字节上限" % wb_watermark.MAX_BYTES)
+        return data
+
+    # ------------------------------------------------------------ 文本嵌入
+
+    def _handle_embeddings_post(self, payload):
+        """`POST /v1/embeddings`：OpenAI 形状的嵌入接口。
+
+        换号与 chat 同一套：命中账号级错误就不换（换号继续打同一台设备会把同设备
+        的其它账号一起送走），其余可重试错误最多换 `EMBEDDINGS_ROTATE_MAX` 个号。
+        """
+        config = wb_settings.embeddings_config(ACCOUNTS_DIR)
+        if not config["enabled"]:
+            return self._error(
+                403, "embeddings is disabled (settings.embeddings.enabled = false)",
+                "invalid_request_error")
+        model = payload.get("model")
+        if not isinstance(model, str) or not model.strip():
+            model = config["model"]
+        model, realm_hint = wb_embeddings.strip_realm_prefix(model)
+        if not model:
+            return self._error(400, "model 不能为空", "invalid_request_error")
+        try:
+            inputs = wb_embeddings.normalize_input(payload.get("input"))
+        except wb_embeddings.EmbeddingError as exc:
+            return self._error(exc.status, exc.message, "invalid_request_error")
+        if len(inputs) > config["max_inputs"]:
+            return self._error(
+                400, "一次最多 %d 条 input（给了 %d 条）"
+                % (config["max_inputs"], len(inputs)), "invalid_request_error")
+        realm = realm_hint
+        if realm is None:
+            # 与媒体同一套优先级：Key 绑定的出口 > 面板默认出口。嵌入没有
+            # `settings.embeddings.realm`——那个开关只决定开不开，出口跟着全局走，
+            # 否则会出现「聊天在 intl、嵌入偷偷在 cn」这种难查的错位。
+            realm = self._key_realm() or CURRENT_REALM
+        excluded = set()
+        tried = 0
+        last = None
+        while tried < EMBEDDINGS_ROTATE_MAX:
+            account = self._pick_embedding_account(realm, excluded)
+            if account is None:
+                if last is not None:
+                    break
+                return self._error(
+                    503, "no available account for realm %s" % realm, "server_error")
+            try:
+                raw = wb_embeddings.request(account, model, inputs)
+            except wb_embeddings.EmbeddingError as exc:
+                last = exc
+                if exc.code in ("model_not_found", "invalid_request"):
+                    # 与账号无关：换号只会把同一个错误重放一遍，还白烧一次请求。
+                    break
+                if exc.code == "upstream_busy":
+                    break
+                try:
+                    account.note_error(exc.message, model=model)
+                except Exception:
+                    pass
+                excluded.add(getattr(account, "uid", ""))
+                tried += 1
+                continue
+            try:
+                account.note_success(model=model)
+            except Exception:
+                pass
+            try:
+                return self._json(200, wb_embeddings.parse_response(raw, len(inputs)))
+            except wb_embeddings.EmbeddingError as exc:
+                return self._error(exc.status, exc.message, "server_error")
+        if last is None:
+            return self._error(503, "no available account", "server_error")
+        return self._error(last.status, last.message,
+                           "rate_limit_error" if last.status == 429 else "server_error")
+
+    def _pick_embedding_account(self, realm, excluded):
+        """挑一个可用的号。嵌入不吃媒体那套并发槽，只需要过账号级守卫。"""
+        try:
+            return POOL.pick(realm=realm, exclude=excluded or None)
+        except Exception:
+            pass
+        try:
+            return POOL.pick()
+        except Exception:
+            return None
+
     # ------------------------------------------------------------ 媒体（生图 / 生视频）
 
-    def _payload_or_error_for_media(self):
+    def _payload_or_error_for_media(self, extra_min_bytes=None):
         """媒体路由的体上限：**不小于** 24 MB，也不小于用户配置的通用上限。
 
         只放宽不收紧：改图的输入图是 data URL，8 MB 原图编码后约 10.7 MB，而通用
         上限默认 16 MB、还可能被 `max_payload_mb` 调小——那是给 chat 定的尺子。
+
+        去水印传 `extra_min_bytes`：它的入参是整张图的 base64，32 MB 的图编码后
+        约 43 MB，比改图还大一圈。抬上限而不是拦小图，因为这道闸的本意是防误发
+        巨型载荷，不是给合法的后处理加一道尺寸税。
         """
         configured = wb_settings.max_payload_mb(ACCOUNTS_DIR)
         generic = configured * 1024 * 1024 if configured is not None else MAX_PAYLOAD_BYTES
-        limit = max(generic, MEDIA_MAX_PAYLOAD_BYTES)
+        limit = max(generic, MEDIA_MAX_PAYLOAD_BYTES, extra_min_bytes or 0)
         try:
             return self._read_payload(max_bytes=limit, allow_list=False)
         except BodyTooLarge as exc:
@@ -24610,7 +25298,8 @@ class Handler(BaseHTTPRequestHandler):
                 model["id"], params["seconds"], params.get("resolution"),
                 with_reference=bool(body.get("reference_images")
                                     or body.get("reference_videos")
-                                    or body.get("reference_audios")))
+                                    or body.get("reference_audios")),
+                audio=params.get("enable_audio") is not False)
         except wb_media.MediaError as exc:
             return self._media_error(exc)
 
@@ -24879,6 +25568,20 @@ class Handler(BaseHTTPRequestHandler):
                     per_resolution[name] = price
             if per_resolution:
                 model["creditsPerSecond"] = per_resolution
+            # 关掉声音是另一个价（2026-11-04 实测 kling-video-v3 720P 3 秒：
+            # 有声 32.37 = 10.79/秒，静音 21.58 = 7.1933/秒，正好 2/3）。不单列
+            # 出来，调用方会以为 `enable_audio:false` 也照收原价。
+            per_resolution_muted = {}
+            for name in (generation.get("resolutions")
+                         or [generation.get("defaultResolution")]):
+                if not name:
+                    continue
+                price = media_price_per_second(model.get("id"), name,
+                                               exact_only=True, audio=False)
+                if price is not None:
+                    per_resolution_muted[name] = price
+            if per_resolution_muted:
+                model["creditsPerSecondMuted"] = per_resolution_muted
             if model["creditPerSecond"] is None:
                 # 如实说明现在的估算依据是上界，而不是装作知道价格。
                 model["creditPerSecondCeiling"] = wb_media.COST_VIDEO_PER_SECOND_CEILING
@@ -25744,6 +26447,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(400, str(exc), "invalid_request_error")
             wb_settings.set_media_config(ACCOUNTS_DIR, patch)
             reply["media"] = wb_settings.media_config(ACCOUNTS_DIR)
+        if "watermark" in payload:
+            # 与 media 同一个道理：白名单外的键会被静默忽略，前端回「保存成功」
+            # 而什么都没落盘。去水印默认关，这个入口就是它唯一的开法。
+            raw = payload.get("watermark")
+            if not isinstance(raw, dict):
+                return self._error(400, "watermark must be an object",
+                                   "invalid_request_error")
+            try:
+                patch = wb_settings.validate_watermark_patch(raw)
+            except ValueError as exc:
+                return self._error(400, str(exc), "invalid_request_error")
+            wb_settings.set_watermark_config(ACCOUNTS_DIR, patch)
+            reply["watermark"] = wb_settings.watermark_config(ACCOUNTS_DIR)
+        if "embeddings" in payload:
+            raw = payload.get("embeddings")
+            if not isinstance(raw, dict):
+                return self._error(400, "embeddings must be an object",
+                                   "invalid_request_error")
+            try:
+                patch = wb_settings.validate_embeddings_patch(raw)
+            except ValueError as exc:
+                return self._error(400, str(exc), "invalid_request_error")
+            wb_settings.set_embeddings_config(ACCOUNTS_DIR, patch)
+            reply["embeddings"] = wb_settings.embeddings_config(ACCOUNTS_DIR)
         if "codearts" in payload:
             raw = payload.get("codearts")
             if not isinstance(raw, dict):
@@ -28437,6 +29164,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_panel(path)
         if self._is_panel_route(path) and not self._panel_ok():
             return self._error(401, "panel password required", "invalid_request_error")
+        if path == MCP_PATH:
+            # MCP 端点自己读 body：它的错误必须是 JSON-RPC 的 -32700 / -32600，
+            # 而不是网关惯用的 `{"error": ...}` 信封——客户端按协议解析，给它
+            # OpenAI 形状等于没回。所以在这里就分流，不进下面那套 payload 逻辑。
+            if not self._authorized():
+                return
+            return self._handle_mcp()
         # 生视频的取消：路径里带 task id，进不了 MEDIA_POST_PATHS 的精确匹配。
         if path.startswith("/v1/videos/") and path.endswith("/cancel"):
             if not self._authorized():
@@ -28465,7 +29199,11 @@ class Handler(BaseHTTPRequestHandler):
         # chat 的并发槽，也不进 chat 的模型别名与 body 改写。不在这行放行，它们
         # 会连"开关关着就 404"都走不到——直接被这里判成 not found。
         is_media_route = path in MEDIA_POST_PATHS
-        if not is_account_route and not is_messages_route and not is_media_route                 and path not in (
+        # 去水印与嵌入同理：各自有独立开关，开关关着要能回 403（"功能在，没开"），
+        # 所以必须先放行到各自的处理函数，而不是在这里统一判 404。
+        is_watermark_route = path in WATERMARK_POST_PATHS
+        is_embeddings_route = path in EMBEDDINGS_POST_PATHS
+        if not is_account_route and not is_messages_route and not is_media_route                 and not is_watermark_route and not is_embeddings_route                 and path not in (
                     "/v1/chat/completions", "/chat/completions",
                     "/v1/completions", "/completions",
                     "/v1/responses", "/responses",
@@ -28500,12 +29238,22 @@ class Handler(BaseHTTPRequestHandler):
             # 改图的输入图是 data URL，8 MB 原图编码后约 10.7 MB；通用上限
             # （默认 16 MB，还可能被 max_payload_mb 调小）会把一次合法请求判成 413。
             payload = self._payload_or_error_for_media()
+        elif is_watermark_route:
+            # 整图 base64 比改图还大，另给一个更宽的上限。
+            payload = self._payload_or_error_for_media(
+                extra_min_bytes=WATERMARK_MAX_PAYLOAD_BYTES)
         else:
             payload = self._payload_or_error(allow_list=(path == "/accounts/import"))
         if payload is None:
             return
         if is_account_route:
             return self._handle_accounts(path, payload)
+        # 去水印与嵌入都在模型别名之前分流：它们的 `model` 字段是上游真实 id
+        # （嵌入是 bge-m3），套 chat 的别名表只会把它改成一个 chat 模型名。
+        if is_watermark_route:
+            return self._handle_watermark_post(payload)
+        if is_embeddings_route:
+            return self._handle_embeddings_post(payload)
         if is_media_route:
             return self._handle_media_post(path, payload)
         try:

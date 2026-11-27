@@ -2003,6 +2003,196 @@ def set_media_config(accounts_dir, patch):
         save(accounts_dir, data)
     return merged
 
+# ---------------------------------------------------------------- 去水印（本地后处理）
+#
+# 纯本地像素运算，**不碰上游、不消耗积分**，所以它比生图安全得多。仍然默认关，
+# 理由只有一条：它是一条新的写接口，升级不该凭空多出一个能读任意 URL 的入口。
+#
+# `min_blank_px` 与 `white_lum` 是「多白才算留白」的判定阈值。做成配置而不是写死，
+# 是因为不同渠道产物的压缩噪声不一样：太严会把可裁的图判成不可裁（422），太松
+# 会把画面内容裁掉一截。默认 90px / 248 是实测能过的那组。
+
+WATERMARK_DEFAULTS = {
+    "enabled": False,
+    "min_blank_px": 90,
+    "white_lum": 248.0,
+    # 像素预算。纯 Python 逐行扫，比 Go 慢两个数量级，所以默认压到 2000 万像素
+    # （约 5000x4000），超过直接 413 而不是让一个请求占满 CPU 半分钟。
+    "max_pixels": 20000000,
+}
+
+WATERMARK_MINIMUMS = {
+    "min_blank_px": 1,
+    "white_lum": 200.0,
+    "max_pixels": 1000000,
+}
+
+WATERMARK_LIMITS = {
+    "min_blank_px": 4096,
+    "white_lum": 255.0,
+    "max_pixels": 100000000,
+}
+
+#: 允许小数的项。其余项必须是整数。
+WATERMARK_FLOAT_KEYS = ("white_lum",)
+
+
+def validate_watermark_patch(raw):
+    """严格校验面板提交的去水印设置补丁。未知键报错，理由同 media。"""
+    out = {}
+    for key, value in (raw or {}).items():
+        if key not in WATERMARK_DEFAULTS:
+            raise ValueError("unknown watermark setting %r" % key)
+        if key == "enabled":
+            if not isinstance(value, bool):
+                raise ValueError("enabled must be true or false")
+            out[key] = value
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("%s must be a number" % key)
+        if key in WATERMARK_FLOAT_KEYS:
+            value = float(value)
+        else:
+            if value != int(value):
+                raise ValueError("%s must be a whole number" % key)
+            value = int(value)
+        if value < WATERMARK_MINIMUMS[key]:
+            raise ValueError("%s cannot be less than %s"
+                             % (key, WATERMARK_MINIMUMS[key]))
+        if value > WATERMARK_LIMITS[key]:
+            raise ValueError("%s cannot be more than %s"
+                             % (key, WATERMARK_LIMITS[key]))
+        out[key] = value
+    return out
+
+
+def watermark_config(accounts_dir, environ=None):
+    """去水印设置（坏值回落默认）。`WB_WATERMARK_ENABLED=1` 可临时强开总闸。"""
+    stored = load(accounts_dir).get("watermark")
+    stored = stored if isinstance(stored, dict) else {}
+    out = {}
+    for key, default in WATERMARK_DEFAULTS.items():
+        value = stored.get(key, default)
+        if key == "enabled":
+            out[key] = value if isinstance(value, bool) else default
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            out[key] = default
+            continue
+        if value < WATERMARK_MINIMUMS[key] or value > WATERMARK_LIMITS[key]:
+            out[key] = default
+            continue
+        out[key] = float(value) if key in WATERMARK_FLOAT_KEYS else int(value)
+    environ = os.environ if environ is None else environ
+    if str(environ.get("WB_WATERMARK_ENABLED") or "").strip() == "1":
+        out["enabled"] = True
+    return out
+
+
+def set_watermark_config(accounts_dir, patch):
+    """持久化一份校验过的去水印设置补丁。"""
+    clean = validate_watermark_patch(patch)
+    with _lock:
+        data = load(accounts_dir)
+        data["watermark"] = deep_merge(data.get("watermark"), clean)
+        save(accounts_dir, data)
+    return clean
+
+# ---------------------------------------------------------------- 文本嵌入
+#
+# 嵌入按 token 计费，比生图便宜得多，但它是**批量**接口：一次 256 条输入就是
+# 256 份 token。所以除了总闸，还有一个 `max_inputs` 上限，避免一次调用把整池
+# 额度吃掉。
+#
+# `model` 留空表示用 `bge-m3`（上游唯一实测可用的嵌入模型）。做成可配置是为了
+# 上游将来上架新模型时不用改代码——但默认值不变。
+
+EMBEDDINGS_DEFAULTS = {
+    "enabled": False,
+    "model": "bge-m3",
+    "max_inputs": 256,
+}
+
+EMBEDDINGS_MINIMUMS = {"max_inputs": 1}
+EMBEDDINGS_LIMITS = {"max_inputs": 2048}
+
+#: 模型名的长度上限。够长到装下任何真实模型 id，又挡住把整个文档塞进这个字段。
+EMBEDDINGS_MODEL_MAX = 128
+
+
+def validate_embeddings_patch(raw):
+    """严格校验面板提交的嵌入设置补丁。"""
+    out = {}
+    for key, value in (raw or {}).items():
+        if key not in EMBEDDINGS_DEFAULTS:
+            raise ValueError("unknown embeddings setting %r" % key)
+        if key == "enabled":
+            if not isinstance(value, bool):
+                raise ValueError("enabled must be true or false")
+            out[key] = value
+            continue
+        if key == "model":
+            if not isinstance(value, str):
+                raise ValueError("model must be a string")
+            model = value.strip()
+            if not model:
+                raise ValueError("model cannot be empty")
+            if len(model) > EMBEDDINGS_MODEL_MAX:
+                raise ValueError("model cannot be longer than %d characters"
+                                 % EMBEDDINGS_MODEL_MAX)
+            out[key] = model
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("%s must be a whole number" % key)
+        if value < EMBEDDINGS_MINIMUMS[key]:
+            raise ValueError("%s cannot be less than %d"
+                             % (key, EMBEDDINGS_MINIMUMS[key]))
+        if value > EMBEDDINGS_LIMITS[key]:
+            raise ValueError("%s cannot be more than %d"
+                             % (key, EMBEDDINGS_LIMITS[key]))
+        out[key] = value
+    return out
+
+
+def embeddings_config(accounts_dir, environ=None):
+    """嵌入设置（坏值回落默认）。`WB_EMBEDDINGS_ENABLED=1` 可临时强开总闸。"""
+    stored = load(accounts_dir).get("embeddings")
+    stored = stored if isinstance(stored, dict) else {}
+    out = {}
+    for key, default in EMBEDDINGS_DEFAULTS.items():
+        value = stored.get(key, default)
+        if key == "enabled":
+            out[key] = value if isinstance(value, bool) else default
+            continue
+        if key == "model":
+            if not isinstance(value, str) or not value.strip():
+                out[key] = default
+            elif len(value.strip()) > EMBEDDINGS_MODEL_MAX:
+                out[key] = default
+            else:
+                out[key] = value.strip()
+            continue
+        if (isinstance(value, bool) or not isinstance(value, int)
+                or value < EMBEDDINGS_MINIMUMS[key]
+                or value > EMBEDDINGS_LIMITS[key]):
+            out[key] = default
+        else:
+            out[key] = value
+    environ = os.environ if environ is None else environ
+    if str(environ.get("WB_EMBEDDINGS_ENABLED") or "").strip() == "1":
+        out["enabled"] = True
+    return out
+
+
+def set_embeddings_config(accounts_dir, patch):
+    """持久化一份校验过的嵌入设置补丁。"""
+    clean = validate_embeddings_patch(patch)
+    with _lock:
+        data = load(accounts_dir)
+        data["embeddings"] = deep_merge(data.get("embeddings"), clean)
+        save(accounts_dir, data)
+    return clean
+
 PROMPT_DEFAULTS = {
     "mode": "passthrough",
     "file": "",
