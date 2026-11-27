@@ -6632,6 +6632,116 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
         生视频并发超过上限时新任务<b>先排队</b>（不提交上游、不扣积分），并行任务会尽量分到不同账号上。
       </div>
     </section>
+
+    <!-- 去水印：配置 + 就地试用。上游生图会在画面底部留一条纯白带（水印位），
+         裁掉它比重新生成一张便宜得多——这里是纯本地像素运算，一个字节都不发上游。 -->
+    <section>
+      <div style="margin-bottom:14px">
+        <h2 style="margin:0">图片去水印 <em id="setWatermarkState"></em></h2>
+        <div style="font-size:12px;color:var(--dim);margin-top:4px">
+          默认关闭。开启后网关提供 <code>POST /v1/images/strip-watermark</code>：从画面底部往上找第一条「有内容」的行，把下面那条纯白留白裁掉。
+          <b>本地后处理，不消耗上游积分</b>。只认 PNG；留白不够高或不够白时回 422，并把实测的留白高度与亮度一起带回来。
+        </div>
+      </div>
+      <div id="watermarkSettingsRow" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:58px">
+          <input id="setWatermarkEnabled" type="checkbox" style="width:16px;height:16px">
+          开启去水印接口
+        </label>
+        <div style="min-width:130px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">最小留白像素</div>
+          <input id="setWatermarkMinBlank" type="number" min="1" max="4096" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div style="min-width:130px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">白度阈值</div>
+          <input id="setWatermarkWhiteLum" type="number" min="200" max="255" step="0.5" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div style="min-width:150px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">像素上限</div>
+          <input id="setWatermarkMaxPixels" type="number" min="1000000" max="100000000" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <button onclick="saveWatermarkConfig(this)" style="height:38px;margin-top:20px">保存</button>
+      </div>
+      <div style="font-size:12px;color:var(--dim);margin-top:10px">
+        最小留白像素：低于这个高度的留白判为「没水印可去」，回 422 而不是硬裁。默认 90。
+        白度阈值：留白平均亮度要到这个值才算纯白（0–255），默认 248，画面偏灰时调低。
+        像素上限防超大图把内存吃穿，默认 2000 万。
+      </div>
+
+      <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--line)">
+        <div style="font-size:12px;color:var(--dim);margin-bottom:8px">
+          就地试一下：选一张带底部白条的 PNG，直接看裁切前后对比。走的就是上面那个接口，不发上游、不扣积分。
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+          <div style="min-width:220px">
+            <div style="font-size:12px;color:var(--dim);margin-bottom:4px">选择 PNG</div>
+            <input id="wmFile" type="file" accept="image/png,.png" onchange="wmPickFile(this)" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;color:var(--fg);font:inherit">
+          </div>
+          <div style="min-width:130px">
+            <div style="font-size:12px;color:var(--dim);margin-bottom:4px">最小留白（留空跟随设置）</div>
+            <input id="wmMinBlank" type="number" min="1" max="4096" placeholder="跟随设置" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+          </div>
+          <div style="min-width:130px">
+            <div style="font-size:12px;color:var(--dim);margin-bottom:4px">额外多留像素</div>
+            <input id="wmKeepBlank" type="number" min="0" max="4096" value="0" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+          </div>
+          <button id="wmRun" onclick="runWatermarkStrip(this)" style="height:38px;margin-top:20px">裁切</button>
+        </div>
+        <div id="wmResult" style="margin-top:14px"></div>
+      </div>
+    </section>
+
+    <!-- 文本嵌入：与生图/生视频同一套 Key、同一套选号，但走的是上游 /v2/embeddings，
+         模型注册表和对话模型是两套——这里只填上游真实 id，不要填别名。 -->
+    <section>
+      <div style="margin-bottom:14px">
+        <h2 style="margin:0">文本嵌入 <em id="setEmbeddingsState"></em></h2>
+        <div style="font-size:12px;color:var(--dim);margin-top:4px">
+          默认关闭。开启后网关提供 <code>POST /v1/embeddings</code>（OpenAI 兼容形状）。上游唯一实测可用的模型是
+          <code>bge-m3</code>（1024 维）；嵌入模型和对话模型是两套注册表，别名表在这里不生效。
+        </div>
+      </div>
+      <div id="embeddingsSettingsRow" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:58px">
+          <input id="setEmbeddingsEnabled" type="checkbox" style="width:16px;height:16px">
+          开启嵌入接口
+        </label>
+        <div style="min-width:160px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">默认模型</div>
+          <input id="setEmbeddingsModel" type="text" maxlength="128" placeholder="bge-m3" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <div style="min-width:130px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">单次最多条数</div>
+          <input id="setEmbeddingsMaxInputs" type="number" min="1" max="2048" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+        </div>
+        <button onclick="saveEmbeddingsConfig(this)" style="height:38px;margin-top:20px">保存</button>
+      </div>
+      <div style="font-size:12px;color:var(--dim);margin-top:10px">
+        请求里的 model 可以带 <code>cn:</code> / <code>global:</code> 前缀强制走某个出口，前缀不会发给上游。
+        单次最多条数是本地闸门，超了直接 400，不去撞上游。
+      </div>
+    </section>
+
+    <!-- MCP：没有开关，也不该有——它是给外部客户端连的端点，面板这边只负责把地址和
+         工具清单讲清楚，顺便把配置片段复制出去。 -->
+    <section>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div>
+          <h2 style="margin:0">MCP 服务 <em id="mcpState"></em></h2>
+          <div style="font-size:12px;color:var(--dim);margin-top:4px">
+            把网关的生图 / 生视频能力接到 Claude Desktop、Cursor、Cline 这类 MCP 客户端。
+            端点 <code>POST /mcp</code>，JSON-RPC 2.0，无状态（不存会话，也不回 SSE）。这里只读，没有开关。
+          </div>
+        </div>
+        <button class="sec mini" onclick="copyMcpConfig()">复制客户端配置</button>
+      </div>
+      <div id="mcpToolList" class="table-wrap"></div>
+      <pre id="mcpSnippet" style="margin-top:12px;padding:12px 14px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--fg);font-size:12px;line-height:1.55;overflow:auto;white-space:pre"></pre>
+      <div style="font-size:12px;color:var(--dim);margin-top:10px">
+        把上面的 <code>&lt;你的 API Key&gt;</code> 换成「设置 → API Key」里的值。工具调用与 REST 走同一条选号 / 换号 / 计费路径，
+        所以 MCP 这边花掉的积分和 REST 是同一本账；只有 <code>strip_watermark</code> 是本地后处理，不扣积分。
+      </div>
+    </section>
   </div>
 
   <div id="pageAnalytics" class="main-page">
@@ -16692,9 +16802,257 @@ async function saveMediaConfig(btn){
   }
 }
 
+/* ---------------- 去水印 / 文本嵌入 / MCP：面板接线 ----------------
+   去水印和嵌入都默认关闭，而且「关闭」不只是界面状态——后端在关闭时连路由都
+   不注册（403 而不是 404，让调用方看得出功能存在、只是没开）。MCP 没有开关：
+   它是给外部客户端连的端点，面板这边只负责把地址和工具清单讲清楚。 */
+
+function applyWatermarkSettings(cfg){
+  const c = cfg || {};
+  const on = document.getElementById('setWatermarkEnabled');
+  if(on) on.checked = c.enabled === true;
+  const minBlank = document.getElementById('setWatermarkMinBlank');
+  if(minBlank && c.min_blank_px != null) minBlank.value = c.min_blank_px;
+  const lum = document.getElementById('setWatermarkWhiteLum');
+  if(lum && c.white_lum != null) lum.value = c.white_lum;
+  const px = document.getElementById('setWatermarkMaxPixels');
+  if(px && c.max_pixels != null) px.value = c.max_pixels;
+  const state = document.getElementById('setWatermarkState');
+  if(state){
+    state.textContent = c.enabled === true ? '(已开启)' : '(已关闭)';
+    state.style.color = c.enabled === true ? 'var(--accent2)' : 'var(--dim)';
+  }
+}
+
+async function saveWatermarkConfig(btn){
+  const num = (id, fallback) => {
+    const el = document.getElementById(id);
+    const value = el ? Number(el.value) : NaN;
+    return Number.isFinite(value) ? value : fallback;
+  };
+  const payload = { watermark: {
+    enabled: !!(document.getElementById('setWatermarkEnabled') || {}).checked,
+    min_blank_px: num('setWatermarkMinBlank', 90),
+    white_lum: num('setWatermarkWhiteLum', 248),
+    max_pixels: num('setWatermarkMaxPixels', 20000000)
+  } };
+  if(btn) btn.disabled = true;
+  try{
+    const res = await postJSON('/settings/save', payload);
+    if(res && res.watermark) applyWatermarkSettings(res.watermark);
+    toast(payload.watermark.enabled
+      ? '已开启：/v1/images/strip-watermark 可用'
+      : '已关闭：去水印路由不再存在');
+    loadSettings();
+  }catch(e){
+    toast('保存失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+/* 就地试用：把选中的文件读成 data URL 直接 POST 给接口。不发上游、不扣积分，
+   所以这里可以随便试——真正花积分的是上游生图那一步。 */
+let WM_PICKED = null;
+
+function wmPickFile(input){
+  const file = (input && input.files && input.files[0]) || null;
+  WM_PICKED = file;
+  const box = document.getElementById('wmResult');
+  if(!box) return;
+  if(!file){ box.innerHTML = ''; return; }
+  box.innerHTML = '<div style="font-size:12px;color:var(--dim)">已选 '
+    + esc(file.name) + '（' + Math.round(file.size / 1024) + ' KB）</div>';
+}
+
+function wmReadDataURL(file){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('读取文件失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderWatermarkResult(res, sourceUrl){
+  const box = document.getElementById('wmResult');
+  if(!box) return;
+  const out = res.data_url || '';
+  const rows = [
+    ['原图尺寸', (res.width || 0) + ' × ' + (res.height || 0)],
+    ['输出尺寸', (res.out_width || 0) + ' × ' + (res.out_height || 0)],
+    ['裁掉的留白', (res.blank_px || 0) + ' px'],
+    ['留白占比', (Number(res.blank_ratio || 0) * 100).toFixed(1) + '%'],
+    ['留白平均亮度', res.blank_lum == null ? '-' : res.blank_lum],
+    ['判定', res.safe ? '够高够白，正常裁' : '偏窄或偏灰，按参数强裁']
+  ];
+  const cells = rows.map(row =>
+    '<tr><td style="color:var(--dim);white-space:nowrap">' + esc(row[0])
+    + '</td><td>' + esc(String(row[1])) + '</td></tr>').join('');
+  const figure = (src, label) => src
+    ? '<figure style="margin:0;flex:1 1 240px;min-width:0">'
+      + '<img src="' + src + '" alt="' + esc(label)
+      + '" style="max-width:100%;border:1px solid var(--line);border-radius:8px;display:block">'
+      + '<figcaption style="font-size:12px;color:var(--dim);margin-top:6px">'
+      + esc(label) + '</figcaption></figure>'
+    : '';
+  box.innerHTML = '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">'
+    + '<div style="display:flex;gap:14px;flex-wrap:wrap;flex:2 1 400px;min-width:0">'
+    + figure(sourceUrl, '原图') + figure(out, '裁切后') + '</div>'
+    + '<div style="flex:1 1 220px;min-width:200px">'
+    + '<table><tbody>' + cells + '</tbody></table>'
+    + (out
+        ? '<a href="' + out + '" download="stripped.png" style="display:inline-block;'
+          + 'margin-top:10px;height:34px;line-height:34px;padding:0 14px;'
+          + 'border:1px solid var(--line);border-radius:8px;color:var(--fg);'
+          + 'text-decoration:none">下载裁切结果</a>'
+        : '')
+    + '</div></div>';
+}
+
+async function runWatermarkStrip(btn){
+  const box = document.getElementById('wmResult');
+  if(!WM_PICKED){ toast('先选一张 PNG', 'warn'); return; }
+  if(btn) btn.disabled = true;
+  if(box) box.innerHTML = '<div style="font-size:12px;color:var(--dim)">裁切中…</div>';
+  try{
+    const dataUrl = await wmReadDataURL(WM_PICKED);
+    const payload = { image: dataUrl, return: 'data_url' };
+    const minBlank = Number((document.getElementById('wmMinBlank') || {}).value);
+    if(Number.isFinite(minBlank) && minBlank > 0) payload.min_blank_px = minBlank;
+    const keep = Number((document.getElementById('wmKeepBlank') || {}).value);
+    if(Number.isFinite(keep) && keep > 0) payload.keep_blank = keep;
+    const res = await postJSON('/v1/images/strip-watermark', payload);
+    renderWatermarkResult(res, dataUrl);
+    toast('裁掉 ' + (res.blank_px || 0) + ' px 留白');
+  }catch(e){
+    // 422 的文案里带着实测的留白高度与亮度（后端拼好的），直接摊在结果区，
+    // 比只弹一个 toast 有用得多——用户照着数字就能判断该涂多白。
+    if(box){
+      box.innerHTML = '<div style="font-size:12px;color:var(--bad);line-height:1.6">'
+        + esc(e.message) + '</div>';
+    }
+    toast('裁切失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+function applyEmbeddingsSettings(cfg){
+  const c = cfg || {};
+  const on = document.getElementById('setEmbeddingsEnabled');
+  if(on) on.checked = c.enabled === true;
+  const model = document.getElementById('setEmbeddingsModel');
+  if(model && c.model != null) model.value = c.model;
+  const maxInputs = document.getElementById('setEmbeddingsMaxInputs');
+  if(maxInputs && c.max_inputs != null) maxInputs.value = c.max_inputs;
+  const state = document.getElementById('setEmbeddingsState');
+  if(state){
+    state.textContent = c.enabled === true ? '(已开启)' : '(已关闭)';
+    state.style.color = c.enabled === true ? 'var(--accent2)' : 'var(--dim)';
+  }
+}
+
+async function saveEmbeddingsConfig(btn){
+  const num = (id, fallback) => {
+    const el = document.getElementById(id);
+    const value = el ? Number(el.value) : NaN;
+    return Number.isFinite(value) ? value : fallback;
+  };
+  const modelEl = document.getElementById('setEmbeddingsModel');
+  const model = ((modelEl && modelEl.value) || '').trim() || 'bge-m3';
+  const payload = { embeddings: {
+    enabled: !!(document.getElementById('setEmbeddingsEnabled') || {}).checked,
+    model: model,
+    max_inputs: num('setEmbeddingsMaxInputs', 256)
+  } };
+  if(btn) btn.disabled = true;
+  try{
+    const res = await postJSON('/settings/save', payload);
+    if(res && res.embeddings) applyEmbeddingsSettings(res.embeddings);
+    toast(payload.embeddings.enabled
+      ? '已开启：/v1/embeddings 可用'
+      : '已关闭：嵌入路由不再存在');
+    loadSettings();
+  }catch(e){
+    toast('保存失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+/* MCP 工具清单是编译期固定的（strip_watermark 只在去水印开启时出现），所以这里
+   写死一份说明就够了，不必每次去问 /mcp。 */
+const MCP_TOOLS_DOC = [
+  { name: 'list_generation_models', required: '—',
+    note: '列出可用的生图 / 生视频模型与实测单价。参数 kind 取 image 或 video。' },
+  { name: 'generate_image', required: 'prompt',
+    note: '文生图，同步返回。约 5.7 积分一张；产物是签名直链，图片 24 小时有效。' },
+  { name: 'edit_image', required: 'prompt, image',
+    note: '改图。image 可以是 URL 或 data URL，也可以传数组一次改多张。' },
+  { name: 'generate_video', required: 'prompt',
+    note: '生视频。默认阻塞到出结果；wait=false 立即拿任务号，再用 get_video_task 查。' },
+  { name: 'get_video_task', required: 'task_id',
+    note: '查异步视频任务的进度、失败原因与产物地址。' },
+  { name: 'strip_watermark', required: 'image',
+    note: '裁掉画面底部的纯白留白。本地后处理，不扣积分；需先在设置里开启去水印。' }
+];
+
+function mcpEndpointUrl(){
+  try{
+    if(typeof location !== 'undefined' && location.origin && location.origin !== 'null'){
+      return location.origin + '/mcp';
+    }
+  }catch(e){ /* 落回下面的默认值 */ }
+  return 'http://127.0.0.1:8788/mcp';
+}
+
+function mcpConfigText(){
+  return JSON.stringify({
+    mcpServers: {
+      workbuddy2api: {
+        type: 'http',
+        url: mcpEndpointUrl(),
+        headers: { Authorization: 'Bearer <你的 API Key>' }
+      }
+    }
+  }, null, 2);
+}
+
+function renderMcpTools(){
+  const box = document.getElementById('mcpToolList');
+  if(!box) return;
+  const rows = MCP_TOOLS_DOC.map(tool =>
+    '<tr><td><code>' + esc(tool.name) + '</code></td><td>'
+    + esc(tool.required) + '</td><td>' + esc(tool.note) + '</td></tr>').join('');
+  box.innerHTML = '<table><thead><tr><th>工具</th><th>必填参数</th><th>说明</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  const snippet = document.getElementById('mcpSnippet');
+  if(snippet) snippet.textContent = mcpConfigText();
+  const state = document.getElementById('mcpState');
+  if(state){
+    state.textContent = '(' + MCP_TOOLS_DOC.length + ' 个工具 · ' + mcpEndpointUrl() + ')';
+    state.style.color = 'var(--dim)';
+  }
+}
+
+function copyMcpConfig(){
+  const text = mcpConfigText();
+  const done = () => toast('已复制 MCP 客户端配置');
+  const fallback = () => toast('复制失败：手动选中下面那段配置', 'warn');
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done).catch(fallback);
+      return;
+    }
+  }catch(e){ /* 老浏览器没有 clipboard API，走提示 */ }
+  fallback();
+}
+
 async function loadMediaPage(){
   loadMediaModels();
   loadMediaTasks();
+  renderMcpTools();
 }
 
 async function loadMediaModels(force){
@@ -17162,6 +17520,10 @@ async function loadSettings(showToast, opts){
     const separateTab = data.accounts_separate_tab === true;
     applyAccountsTabLayout(window.__NEXT_UI__ || separateTab);
     applyMediaSettings(data.media);
+    // 去水印与嵌入同样是「默认关」的两组配置：字段缺失（后端旧一点）就按关闭
+    // 渲染，与 applyMediaSettings 的口径一致。
+    applyWatermarkSettings(data.watermark);
+    applyEmbeddingsSettings(data.embeddings);
     const separateState = document.getElementById('setAccountsSeparateState');
     if(separateState) separateState.textContent = separateTab ? '(已开启)' : '(默认：合并)';
     const separateInput = document.getElementById('setAccountsSeparate');
